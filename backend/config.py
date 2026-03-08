@@ -10,17 +10,37 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Council members - list of OpenRouter model identifiers
 COUNCIL_MODELS = [
-    "openai/gpt-5.1",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
-    "x-ai/grok-4",
+    "deepseek/deepseek-chat",
+    "minimax/MiniMax-M2.1",
+    "kimi/kimi-k2-turbo-preview",
+    "glm/glm-5",
 ]
 
 # Chairman model - synthesizes final response
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
+CHAIRMAN_MODEL = "deepseek/deepseek-chat"
 
-# OpenRouter API endpoint
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+PROVIDERS = {
+    "deepseek": {
+        "api_key": os.getenv("DEEPSEEK_API_KEY"),
+        "base_url": (os.getenv("DEEPSEEK_BASE_URL") or "").rstrip("/") + "/chat/completions",
+    },
+    "minimax": {
+        "api_key": os.getenv("MINIMAX_API_KEY"),
+        "base_url": (os.getenv("MINIMAX_BASE_URL") or "").rstrip("/") + "/chat/completions",
+    },
+    "kimi": {
+        "api_key": os.getenv("KIMI_API_KEY"),
+        "base_url": (os.getenv("KIMI_BASE_URL") or "").rstrip("/") + "/chat/completions",
+    },
+    "glm": {
+        "api_key": os.getenv("GLM_API_KEY"),
+        "base_url": (os.getenv("GLM_BASE_URL") or "").rstrip("/") + "/chat/completions",
+    },
+    "openrouter": {
+        "api_key": os.getenv("OPENROUTER_API_KEY"),
+        "base_url": "https://openrouter.ai/api/v1/chat/completions",
+    }
+}
 
 # Data directory for conversation storage
 DATA_DIR = "data/conversations"
