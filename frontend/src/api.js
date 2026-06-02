@@ -79,4 +79,12 @@ export const api = {
 
     cleanup();
   },
+
+  async getSettings() {
+    return invoke('get_settings');
+  },
+
+  async saveSettings(settings) {
+    return invoke('save_settings', { settings });
+  },
 };

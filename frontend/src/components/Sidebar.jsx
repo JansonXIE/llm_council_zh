@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import Settings from './Settings';
 import './Sidebar.css';
 
 export default function Sidebar({
@@ -6,6 +8,8 @@ export default function Sidebar({
   onSelectConversation,
   onNewConversation,
 }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
@@ -37,6 +41,15 @@ export default function Sidebar({
           ))
         )}
       </div>
+
+      <div className="sidebar-footer">
+        <button className="settings-btn" onClick={() => setSettingsOpen(true)}>
+          <span className="settings-btn-icon">⚙</span>
+          设置
+        </button>
+      </div>
+
+      <Settings isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

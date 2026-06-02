@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use uuid::Uuid;
@@ -21,10 +21,27 @@ const DEFAULT_COUNCIL_MODELS: &[&str] = &[
 const DEFAULT_CHAIRMAN_MODEL: &str = "deepseek/DeepSeek-V4-Pro";
 const STREAM_EVENT_NAME: &str = "council-event";
 
+// ── Settings ──────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct AppSettings {
+    deepseek_api_key: String,
+    deepseek_base_url: String,
+    minimax_api_key: String,
+    minimax_base_url: String,
+    kimi_api_key: String,
+    kimi_base_url: String,
+    glm_api_key: String,
+    glm_base_url: String,
+    data_dir: String,
+}
+
+// ── Core types ────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 struct AppState {
     client: Client,
-    config: Arc<CouncilConfig>,
+    config: Arc<RwLock<CouncilConfig>>,
 }
 
 #[derive(Clone)]
@@ -32,6 +49,7 @@ struct CouncilConfig {
     chairman_model: String,
     council_models: Vec<String>,
     providers: HashMap<String, ProviderConfig>,
+    data_dir: Option<String>,
 }
 
 #[derive(Clone)]
@@ -136,84 +154,187 @@ struct ModelReply {
     content: String,
 }
 
+// ── Settings persistence ──────────────────────────────────────────────
+
+fn settings_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let mut path = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    path.push("settings.json");
+    Ok(path)
+}
+
+fn load_settings_from_file(app_handle: &AppHandle) -> AppSettings {
+    let path = match settings_path(app_handle) {
+        Ok(p) => p,
+        Err(_) => return AppSettings::default(),
+    };
+
+    if !path.exists() {
+        return AppSettings::default();
+    }
+
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    serde_json::from_str::<AppSettings>(&contents).unwrap_or_default()
+}
+
+fn save_settings_to_file(app_handle: &AppHandle, settings: &AppSettings) -> Result<(), String> {
+    let path = settings_path(app_handle)?;
+
+    // Ensure directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Build config ──────────────────────────────────────────────────────
+
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn chat_completions_base_url(env_name: &str) -> Option<String> {
+    let base = env_var(env_name)?;
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.ends_with("/chat/completions") {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("{trimmed}/chat/completions"))
+    }
+}
+
+fn apply_base_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.ends_with("/chat/completions") {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("{trimmed}/chat/completions"))
+    }
+}
+
+fn build_council_config(settings: &AppSettings) -> CouncilConfig {
+    dotenvy::dotenv().ok();
+
+    let council_models = env_var("COUNCIL_MODELS")
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|models| !models.is_empty())
+        .unwrap_or_else(|| {
+            DEFAULT_COUNCIL_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect()
+        });
+
+    let chairman_model = env_var("CHAIRMAN_MODEL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_CHAIRMAN_MODEL.to_string());
+
+    // Helper: prefer settings value, fall back to env var
+    fn pick_key(settings_val: &str, env_name: &str) -> Option<String> {
+        if !settings_val.is_empty() {
+            Some(settings_val.to_string())
+        } else {
+            env_var(env_name)
+        }
+    }
+
+    fn pick_url(settings_val: &str, env_name: &str) -> Option<String> {
+        if !settings_val.is_empty() {
+            apply_base_url(settings_val)
+        } else {
+            chat_completions_base_url(env_name)
+        }
+    }
+
+    let mut providers = HashMap::new();
+    providers.insert(
+        "deepseek".to_string(),
+        ProviderConfig {
+            api_key: pick_key(&settings.deepseek_api_key, "DEEPSEEK_API_KEY"),
+            base_url: pick_url(&settings.deepseek_base_url, "DEEPSEEK_BASE_URL"),
+        },
+    );
+    providers.insert(
+        "minimax".to_string(),
+        ProviderConfig {
+            api_key: pick_key(&settings.minimax_api_key, "MINIMAX_API_KEY"),
+            base_url: pick_url(&settings.minimax_base_url, "MINIMAX_BASE_URL"),
+        },
+    );
+    providers.insert(
+        "kimi".to_string(),
+        ProviderConfig {
+            api_key: pick_key(&settings.kimi_api_key, "KIMI_API_KEY"),
+            base_url: pick_url(&settings.kimi_base_url, "KIMI_BASE_URL"),
+        },
+    );
+    providers.insert(
+        "glm".to_string(),
+        ProviderConfig {
+            api_key: pick_key(&settings.glm_api_key, "GLM_API_KEY"),
+            base_url: pick_url(&settings.glm_base_url, "GLM_BASE_URL"),
+        },
+    );
+    providers.insert(
+        "openrouter".to_string(),
+        ProviderConfig {
+            api_key: env_var("OPENROUTER_API_KEY"),
+            base_url: Some("https://openrouter.ai/api/v1/chat/completions".to_string()),
+        },
+    );
+
+    // Data directory: prefer settings, fall back to default
+    let data_dir = if !settings.data_dir.is_empty() {
+        Some(settings.data_dir.clone())
+    } else {
+        None
+    };
+
+    CouncilConfig {
+        chairman_model,
+        council_models,
+        providers,
+        data_dir,
+    }
+}
+
+// ── AppState impl ─────────────────────────────────────────────────────
+
 impl AppState {
-    fn new() -> Self {
+    fn new(app_handle: &AppHandle) -> Self {
+        let settings = load_settings_from_file(app_handle);
+        let config = build_council_config(&settings);
+
         Self {
             client: Client::new(),
-            config: Arc::new(CouncilConfig::from_env()),
+            config: Arc::new(RwLock::new(config)),
         }
     }
 }
 
-impl CouncilConfig {
-    fn from_env() -> Self {
-        dotenvy::dotenv().ok();
-
-        let council_models = env_var("COUNCIL_MODELS")
-            .map(|value| {
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|item| !item.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .filter(|models| !models.is_empty())
-            .unwrap_or_else(|| {
-                DEFAULT_COUNCIL_MODELS
-                    .iter()
-                    .map(|model| (*model).to_string())
-                    .collect()
-            });
-
-        let chairman_model = env_var("CHAIRMAN_MODEL")
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_CHAIRMAN_MODEL.to_string());
-
-        let mut providers = HashMap::new();
-        providers.insert(
-            "deepseek".to_string(),
-            ProviderConfig {
-                api_key: env_var("DEEPSEEK_API_KEY"),
-                base_url: chat_completions_base_url("DEEPSEEK_BASE_URL"),
-            },
-        );
-        providers.insert(
-            "minimax".to_string(),
-            ProviderConfig {
-                api_key: env_var("MINIMAX_API_KEY"),
-                base_url: chat_completions_base_url("MINIMAX_BASE_URL"),
-            },
-        );
-        providers.insert(
-            "kimi".to_string(),
-            ProviderConfig {
-                api_key: env_var("KIMI_API_KEY"),
-                base_url: chat_completions_base_url("KIMI_BASE_URL"),
-            },
-        );
-        providers.insert(
-            "glm".to_string(),
-            ProviderConfig {
-                api_key: env_var("GLM_API_KEY"),
-                base_url: chat_completions_base_url("GLM_BASE_URL"),
-            },
-        );
-        providers.insert(
-            "openrouter".to_string(),
-            ProviderConfig {
-                api_key: env_var("OPENROUTER_API_KEY"),
-                base_url: Some("https://openrouter.ai/api/v1/chat/completions".to_string()),
-            },
-        );
-
-        Self {
-            chairman_model,
-            council_models,
-            providers,
-        }
-    }
-}
+// ── StreamEvent impl ──────────────────────────────────────────────────
 
 impl StreamEvent {
     fn new(conversation_id: &str, event_type: &str) -> Self {
@@ -242,26 +363,7 @@ impl StreamEvent {
     }
 }
 
-fn env_var(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn chat_completions_base_url(env_name: &str) -> Option<String> {
-    let base = env_var(env_name)?;
-    let trimmed = base.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if trimmed.ends_with("/chat/completions") {
-        Some(trimmed.to_string())
-    } else {
-        Some(format!("{trimmed}/chat/completions"))
-    }
-}
+// ── Helper functions ──────────────────────────────────────────────────
 
 fn round_to_2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
@@ -308,37 +410,48 @@ fn extract_content(data: &Value) -> String {
         .unwrap_or_default()
 }
 
+fn serialize_value<T: Serialize>(value: &T) -> Result<Value, String> {
+    serde_json::to_value(value).map_err(|error| error.to_string())
+}
+
+// ── Query model ───────────────────────────────────────────────────────
+
 async fn query_model(
     client: &Client,
-    config: &CouncilConfig,
+    config: &Arc<RwLock<CouncilConfig>>,
     model: &str,
     messages: &[ChatMessage],
     timeout_secs: f64,
 ) -> Option<ModelReply> {
-    let (provider_name, provider_model_id) = model
-        .split_once('/')
-        .map(|(provider, actual)| (provider.to_lowercase(), actual.to_string()))
-        .unwrap_or_else(|| ("openrouter".to_string(), model.to_string()));
+    // Extract needed data from config and release lock immediately
+    let (api_key, api_url, request_model) = {
+        let cfg = config.read().unwrap();
 
-    let provider = config
-        .providers
-        .get(&provider_name)
-        .filter(|provider| provider.api_key.is_some() && provider.base_url.is_some());
+        let (provider_name, provider_model_id) = model
+            .split_once('/')
+            .map(|(provider, actual)| (provider.to_lowercase(), actual.to_string()))
+            .unwrap_or_else(|| ("openrouter".to_string(), model.to_string()));
 
-    let (api_key, api_url, request_model) = if let Some(provider) = provider {
-        (
-            provider.api_key.clone().unwrap_or_default(),
-            provider.base_url.clone().unwrap_or_default(),
-            provider_model_id,
-        )
-    } else {
-        let fallback = config.providers.get("openrouter")?;
-        (
-            fallback.api_key.clone()?,
-            fallback.base_url.clone()?,
-            model.to_string(),
-        )
-    };
+        let provider = cfg
+            .providers
+            .get(&provider_name)
+            .filter(|provider| provider.api_key.is_some() && provider.base_url.is_some());
+
+        if let Some(provider) = provider {
+            (
+                provider.api_key.clone().unwrap_or_default(),
+                provider.base_url.clone().unwrap_or_default(),
+                provider_model_id,
+            )
+        } else {
+            let fallback = cfg.providers.get("openrouter")?;
+            (
+                fallback.api_key.clone()?,
+                fallback.base_url.clone()?,
+                model.to_string(),
+            )
+        }
+    }; // cfg dropped here, before any .await
 
     let response = client
         .post(api_url)
@@ -382,7 +495,7 @@ async fn query_model(
 
 async fn query_models_parallel(
     client: &Client,
-    config: Arc<CouncilConfig>,
+    config: Arc<RwLock<CouncilConfig>>,
     models: &[String],
     messages: Vec<ChatMessage>,
 ) -> Vec<(String, Option<ModelReply>)> {
@@ -404,9 +517,11 @@ async fn query_models_parallel(
     join_all(tasks).await
 }
 
+// ── Council stages ────────────────────────────────────────────────────
+
 async fn stage1_collect_responses(
     client: &Client,
-    config: Arc<CouncilConfig>,
+    config: Arc<RwLock<CouncilConfig>>,
     user_query: &str,
 ) -> Vec<Stage1Response> {
     let messages = vec![ChatMessage {
@@ -414,7 +529,12 @@ async fn stage1_collect_responses(
         content: user_query.to_string(),
     }];
 
-    query_models_parallel(client, config.clone(), &config.council_models, messages)
+    let models = {
+        let cfg = config.read().unwrap();
+        cfg.council_models.clone()
+    }; // cfg dropped
+
+    query_models_parallel(client, config.clone(), &models, messages)
         .await
         .into_iter()
         .filter_map(|(model, response)| {
@@ -428,7 +548,7 @@ async fn stage1_collect_responses(
 
 async fn stage2_collect_rankings(
     client: &Client,
-    config: Arc<CouncilConfig>,
+    config: Arc<RwLock<CouncilConfig>>,
     user_query: &str,
     stage1_results: &[Stage1Response],
 ) -> (Vec<Stage2Response>, HashMap<String, String>) {
@@ -458,7 +578,9 @@ async fn stage2_collect_rankings(
         content: ranking_prompt,
     }];
 
-    let stage2_results = query_models_parallel(client, config.clone(), &config.council_models, messages)
+    let models = config.read().unwrap().council_models.clone();
+
+    let stage2_results = query_models_parallel(client, config.clone(), &models, messages)
         .await
         .into_iter()
         .filter_map(|(model, response)| {
@@ -475,7 +597,7 @@ async fn stage2_collect_rankings(
 
 async fn stage3_synthesize_final(
     client: &Client,
-    config: Arc<CouncilConfig>,
+    config: Arc<RwLock<CouncilConfig>>,
     user_query: &str,
     stage1_results: &[Stage1Response],
     stage2_results: &[Stage2Response],
@@ -501,17 +623,22 @@ async fn stage3_synthesize_final(
         content: chairman_prompt,
     }];
 
+    let chairman_model = {
+        let cfg = config.read().unwrap();
+        cfg.chairman_model.clone()
+    }; // cfg dropped
+
     let response = query_model(
         client,
         &config,
-        &config.chairman_model,
+        &chairman_model,
         &messages,
         120.0,
     )
     .await;
 
     Stage3Response {
-        model: config.chairman_model.clone(),
+        model: chairman_model,
         response: response
             .map(|reply| reply.content)
             .unwrap_or_else(|| "Error: Unable to generate final synthesis.".to_string()),
@@ -582,7 +709,7 @@ fn calculate_aggregate_rankings(
 
 async fn generate_conversation_title(
     client: &Client,
-    config: Arc<CouncilConfig>,
+    config: Arc<RwLock<CouncilConfig>>,
     user_query: &str,
 ) -> String {
     let title_prompt = format!(
@@ -594,10 +721,15 @@ async fn generate_conversation_title(
         content: title_prompt,
     }];
 
+    let chairman_model = {
+        let cfg = config.read().unwrap();
+        cfg.chairman_model.clone()
+    }; // cfg dropped
+
     let response = query_model(
         client,
         &config,
-        &config.chairman_model,
+        &chairman_model,
         &messages,
         30.0,
     )
@@ -626,7 +758,7 @@ async fn generate_conversation_title(
 
 async fn run_full_council(
     client: &Client,
-    config: Arc<CouncilConfig>,
+    config: Arc<RwLock<CouncilConfig>>,
     user_query: &str,
 ) -> SendMessageResponse {
     let stage1 = stage1_collect_responses(client, config.clone(), user_query).await;
@@ -658,30 +790,37 @@ async fn run_full_council(
     }
 }
 
-fn serialize_value<T: Serialize>(value: &T) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|error| error.to_string())
-}
+// ── Conversation storage ──────────────────────────────────────────────
 
-async fn conversation_directory(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let mut directory = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    directory.push("conversations");
+async fn conversation_directory(app_handle: &AppHandle, config: &Arc<RwLock<CouncilConfig>>) -> Result<PathBuf, String> {
+    let directory = {
+        let cfg = config.read().unwrap();
+        if let Some(data_dir) = &cfg.data_dir {
+            PathBuf::from(data_dir)
+        } else {
+            let mut dir = app_handle
+                .path()
+                .app_data_dir()
+                .map_err(|error| error.to_string())?;
+            dir.push("conversations");
+            dir
+        }
+    }; // cfg dropped here
+
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|error| error.to_string())?;
     Ok(directory)
 }
 
-async fn conversation_path(app_handle: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
-    let mut path = conversation_directory(app_handle).await?;
+async fn conversation_path(app_handle: &AppHandle, config: &Arc<RwLock<CouncilConfig>>, conversation_id: &str) -> Result<PathBuf, String> {
+    let mut path = conversation_directory(app_handle, config).await?;
     path.push(format!("{conversation_id}.json"));
     Ok(path)
 }
 
-async fn save_conversation(app_handle: &AppHandle, conversation: &Conversation) -> Result<(), String> {
-    let path = conversation_path(app_handle, &conversation.id).await?;
+async fn save_conversation(app_handle: &AppHandle, config: &Arc<RwLock<CouncilConfig>>, conversation: &Conversation) -> Result<(), String> {
+    let path = conversation_path(app_handle, config, &conversation.id).await?;
     let payload = serde_json::to_vec_pretty(conversation).map_err(|error| error.to_string())?;
     tokio::fs::write(path, payload)
         .await
@@ -690,9 +829,10 @@ async fn save_conversation(app_handle: &AppHandle, conversation: &Conversation) 
 
 async fn load_conversation_from_storage(
     app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
     conversation_id: &str,
 ) -> Result<Conversation, String> {
-    let path = conversation_path(app_handle, conversation_id).await?;
+    let path = conversation_path(app_handle, config, conversation_id).await?;
     let contents = tokio::fs::read_to_string(path).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             "Conversation not found".to_string()
@@ -706,8 +846,9 @@ async fn load_conversation_from_storage(
 
 async fn list_conversations_from_storage(
     app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
 ) -> Result<Vec<ConversationMetadata>, String> {
-    let directory = conversation_directory(app_handle).await?;
+    let directory = conversation_directory(app_handle, config).await?;
     let mut entries = tokio::fs::read_dir(directory)
         .await
         .map_err(|error| error.to_string())?;
@@ -747,7 +888,10 @@ async fn list_conversations_from_storage(
     Ok(conversations)
 }
 
-async fn create_conversation_in_storage(app_handle: &AppHandle) -> Result<Conversation, String> {
+async fn create_conversation_in_storage(
+    app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
+) -> Result<Conversation, String> {
     let conversation = Conversation {
         id: Uuid::new_v4().to_string(),
         created_at: Utc::now().to_rfc3339(),
@@ -755,40 +899,43 @@ async fn create_conversation_in_storage(app_handle: &AppHandle) -> Result<Conver
         messages: Vec::new(),
     };
 
-    save_conversation(app_handle, &conversation).await?;
+    save_conversation(app_handle, config, &conversation).await?;
     Ok(conversation)
 }
 
 async fn update_conversation_title(
     app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
     conversation_id: &str,
     title: String,
 ) -> Result<(), String> {
-    let mut conversation = load_conversation_from_storage(app_handle, conversation_id).await?;
+    let mut conversation = load_conversation_from_storage(app_handle, config, conversation_id).await?;
     conversation.title = title;
-    save_conversation(app_handle, &conversation).await
+    save_conversation(app_handle, config, &conversation).await
 }
 
 async fn append_user_message(
     app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
     conversation_id: &str,
     content: String,
 ) -> Result<(), String> {
-    let mut conversation = load_conversation_from_storage(app_handle, conversation_id).await?;
+    let mut conversation = load_conversation_from_storage(app_handle, config, conversation_id).await?;
     conversation.messages.push(user_message(content));
-    save_conversation(app_handle, &conversation).await
+    save_conversation(app_handle, config, &conversation).await
 }
 
 async fn append_assistant_message(
     app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
     conversation_id: &str,
     response: &SendMessageResponse,
 ) -> Result<(), String> {
-    let mut conversation = load_conversation_from_storage(app_handle, conversation_id).await?;
+    let mut conversation = load_conversation_from_storage(app_handle, config, conversation_id).await?;
     conversation
         .messages
         .push(assistant_message_from_response(response));
-    save_conversation(app_handle, &conversation).await
+    save_conversation(app_handle, config, &conversation).await
 }
 
 fn emit_stream_event(window: &WebviewWindow, event: StreamEvent) -> Result<(), String> {
@@ -797,18 +944,20 @@ fn emit_stream_event(window: &WebviewWindow, event: StreamEvent) -> Result<(), S
         .map_err(|error| error.to_string())
 }
 
+// ── Streaming council ──────────────────────────────────────────────────
+
 async fn run_streaming_council(
     window: WebviewWindow,
     app_handle: AppHandle,
     client: Client,
-    config: Arc<CouncilConfig>,
+    config: Arc<RwLock<CouncilConfig>>,
     conversation_id: String,
     content: String,
 ) -> Result<(), String> {
-    let conversation = load_conversation_from_storage(&app_handle, &conversation_id).await?;
+    let conversation = load_conversation_from_storage(&app_handle, &config, &conversation_id).await?;
     let is_first_message = conversation.messages.is_empty();
 
-    append_user_message(&app_handle, &conversation_id, content.clone()).await?;
+    append_user_message(&app_handle, &config, &conversation_id, content.clone()).await?;
 
     let title_task = if is_first_message {
         let client = client.clone();
@@ -884,7 +1033,7 @@ async fn run_streaming_council(
 
     if let Some(title_task) = title_task {
         if let Ok(title) = title_task.await {
-            update_conversation_title(&app_handle, &conversation_id, title.clone()).await?;
+            update_conversation_title(&app_handle, &config, &conversation_id, title.clone()).await?;
             emit_stream_event(
                 &window,
                 StreamEvent::new(&conversation_id, "title_complete")
@@ -900,27 +1049,30 @@ async fn run_streaming_council(
         metadata,
     };
 
-    append_assistant_message(&app_handle, &conversation_id, &response).await?;
+    append_assistant_message(&app_handle, &config, &conversation_id, &response).await?;
     emit_stream_event(&window, StreamEvent::new(&conversation_id, "complete"))?;
     Ok(())
 }
 
+// ── Tauri commands ────────────────────────────────────────────────────
+
 #[tauri::command]
-async fn list_conversations(app_handle: AppHandle) -> Result<Vec<ConversationMetadata>, String> {
-    list_conversations_from_storage(&app_handle).await
+async fn list_conversations(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Vec<ConversationMetadata>, String> {
+    list_conversations_from_storage(&app_handle, &state.config).await
 }
 
 #[tauri::command]
-async fn create_conversation(app_handle: AppHandle) -> Result<Conversation, String> {
-    create_conversation_in_storage(&app_handle).await
+async fn create_conversation(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Conversation, String> {
+    create_conversation_in_storage(&app_handle, &state.config).await
 }
 
 #[tauri::command]
 async fn get_conversation(
     app_handle: AppHandle,
+    state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<Conversation, String> {
-    load_conversation_from_storage(&app_handle, &conversation_id).await
+    load_conversation_from_storage(&app_handle, &state.config, &conversation_id).await
 }
 
 #[tauri::command]
@@ -930,18 +1082,18 @@ async fn send_message(
     conversation_id: String,
     content: String,
 ) -> Result<SendMessageResponse, String> {
-    let conversation = load_conversation_from_storage(&app_handle, &conversation_id).await?;
+    let conversation = load_conversation_from_storage(&app_handle, &state.config, &conversation_id).await?;
     let is_first_message = conversation.messages.is_empty();
 
-    append_user_message(&app_handle, &conversation_id, content.clone()).await?;
+    append_user_message(&app_handle, &state.config, &conversation_id, content.clone()).await?;
 
     if is_first_message {
         let title = generate_conversation_title(&state.client, state.config.clone(), &content).await;
-        update_conversation_title(&app_handle, &conversation_id, title).await?;
+        update_conversation_title(&app_handle, &state.config, &conversation_id, title).await?;
     }
 
     let response = run_full_council(&state.client, state.config.clone(), &content).await;
-    append_assistant_message(&app_handle, &conversation_id, &response).await?;
+    append_assistant_message(&app_handle, &state.config, &conversation_id, &response).await?;
     Ok(response)
 }
 
@@ -978,16 +1130,50 @@ fn start_council_stream(
     Ok(())
 }
 
+#[tauri::command]
+fn get_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
+    Ok(load_settings_from_file(&app_handle))
+}
+
+#[tauri::command]
+fn save_settings(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    settings: AppSettings,
+) -> Result<AppSettings, String> {
+    // Persist to disk
+    save_settings_to_file(&app_handle, &settings)?;
+
+    // Rebuild and swap the runtime config
+    let new_config = build_council_config(&settings);
+    {
+        let mut cfg = state.config.write().unwrap();
+        *cfg = new_config;
+    }
+
+    Ok(settings)
+}
+
+// ── Entry point ───────────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState::new())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            let state = AppState::new(&app_handle);
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_conversations,
             create_conversation,
             get_conversation,
             send_message,
-            start_council_stream
+            start_council_stream,
+            get_settings,
+            save_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
