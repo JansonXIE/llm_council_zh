@@ -14,7 +14,7 @@ async def query_model(
     Query a single model via its respective API.
 
     Args:
-        model: Model identifier (e.g., "deepseek/deepseek-chat" or "openai/gpt-4o")
+        model: Model identifier (e.g., "deepseek/DeepSeek-V4-Pro" or "openai/gpt-4o")
         messages: List of message dicts with 'role' and 'content'
         timeout: Request timeout in seconds
 
