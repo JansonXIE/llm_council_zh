@@ -10,35 +10,62 @@ function App() {
   const [currentConversation, setCurrentConversation] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Load conversations on mount
-  useEffect(() => {
-    loadConversations();
-  }, []);
-
-  // Load conversation details when selected
-  useEffect(() => {
-    if (currentConversationId) {
-      loadConversation(currentConversationId);
-    }
-  }, [currentConversationId]);
-
-  const loadConversations = async () => {
+  async function loadConversations() {
     try {
       const convs = await api.listConversations();
       setConversations(convs);
     } catch (error) {
       console.error('Failed to load conversations:', error);
     }
-  };
+  }
 
-  const loadConversation = async (id) => {
-    try {
-      const conv = await api.getConversation(id);
-      setCurrentConversation(conv);
-    } catch (error) {
-      console.error('Failed to load conversation:', error);
+  // Load conversations on mount
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadInitialConversations = async () => {
+      try {
+        const convs = await api.listConversations();
+        if (!isCancelled) {
+          setConversations(convs);
+        }
+      } catch (error) {
+        console.error('Failed to load conversations:', error);
+      }
+    };
+
+    loadInitialConversations();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  // Load conversation details when selected
+  useEffect(() => {
+    if (!currentConversationId) {
+      return undefined;
     }
-  };
+
+    let isCancelled = false;
+
+    const loadSelectedConversation = async () => {
+      try {
+        const conv = await api.getConversation(currentConversationId);
+        if (!isCancelled) {
+          setCurrentConversation(conv);
+        }
+      } catch (error) {
+        console.error('Failed to load conversation:', error);
+      }
+    };
+
+    loadSelectedConversation();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentConversationId]);
 
   const handleNewConversation = async () => {
     try {

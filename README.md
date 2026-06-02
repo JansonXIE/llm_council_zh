@@ -14,80 +14,77 @@ In a bit more detail, here is what happens when you submit a query:
 
 This project was 99% vibe coded as a fun Saturday hack because I wanted to explore and evaluate a number of LLMs side by side in the process of [reading books together with LLMs](https://x.com/karpathy/status/1990577951671509438). It's nice and useful to see multiple responses side by side, and also the cross-opinions of all LLMs on each other's outputs. I'm not going to support it in any way, it's provided here as is for other people's inspiration and I don't intend to improve it. Code is ephemeral now and libraries are over, ask your LLM to change it in whatever way you like.
 
-## Setup
+## Desktop Setup
 
-### 1. Install Dependencies
+The app now runs as a [Tauri](https://tauri.app/) desktop application. The React UI stays the same, but the old FastAPI backend has been replaced by a local Rust runtime inside the desktop app.
 
-The project uses [uv](https://docs.astral.sh/uv/) for project management.
+### 1. Install Prerequisites
 
-**Backend:**
+- Install Node.js 20+
+- Install Rust via [rustup](https://www.rust-lang.org/tools/install)
+- On Windows, install **Microsoft C++ Build Tools** with "Desktop development with C++"
+- Ensure **WebView2 Runtime** is installed
 
-```bash
-uv sync
-uv run python -m backend.main
-```
-
-**Frontend:**
+### 2. Install Frontend and Tauri Dependencies
 
 ```bash
 cd frontend
 npm install
-cd ..
 ```
 
-### 2. Configure API Key
+### 3. Configure API Keys
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root. The Tauri runtime loads it automatically during development.
 
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-...
+DEEPSEEK_API_KEY=...
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+MINIMAX_API_KEY=...
+MINIMAX_BASE_URL=https://api.minimax.chat/v1
+KIMI_API_KEY=...
+KIMI_BASE_URL=https://api.moonshot.cn/v1
+GLM_API_KEY=...
+GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
 ```
 
-Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase the credits you need, or sign up for automatic top up.
+Provider-prefixed models such as `deepseek/...` or `glm/...` will use their dedicated API if both key and base URL are configured. Otherwise the runtime falls back to OpenRouter.
 
-### 3. Configure Models (Optional)
+### 4. Configure Models (Optional)
 
-Edit `backend/config.py` to customize the council:
-
-```python
-COUNCIL_MODELS = [
-    "openai/gpt-5.1",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
-    "x-ai/grok-4",
-]
-
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
-```
-
-## Running the Application
-
-**Option 1: Use the start script**
+By default the desktop runtime uses the same council as [backend/config.py](backend/config.py). You can override it without recompiling by adding these optional environment variables:
 
 ```bash
-./start.sh
+COUNCIL_MODELS=deepseek/DeepSeek-V4-Pro,minimax/MiniMax-M3,kimi/Kimi-K2.6,glm/GLM-5.1
+CHAIRMAN_MODEL=deepseek/DeepSeek-V4-Pro
 ```
 
-**Option 2: Run manually**
-
-Terminal 1 (Backend):
-
-```bash
-uv run python -m backend.main
-```
-
-Terminal 2 (Frontend):
+## Running the Desktop App
 
 ```bash
 cd frontend
-npm run dev
+npm run tauri dev
 ```
 
-Then open http://localhost:5173 in your browser.
+That starts Vite and the Tauri desktop shell together. You no longer need a separate Python backend process.
+
+## Local Persistence
+
+Conversations are stored as JSON files in Tauri's app data directory instead of [data/conversations](data/conversations).
+
+- Windows: `%AppData%/com.jianxing.llm-council/conversations/`
+- macOS: `~/Library/Application Support/com.jianxing.llm-council/conversations/`
+- Linux: `~/.local/share/com.jianxing.llm-council/conversations/`
+
+This keeps conversation data local to the desktop app and avoids exposing provider API keys to the browser runtime.
+
+## Legacy Backend
+
+The old Python backend under [backend](backend) is still in the repository as a reference implementation, but it is no longer required to run the app.
 
 ## Tech Stack
 
-- **Backend:** FastAPI (Python 3.10+), async httpx, OpenRouter API
-- **Frontend:** React + Vite, react-markdown for rendering
-- **Storage:** JSON files in `data/conversations/`
-- **Package Management:** uv for Python, npm for JavaScript
+- **Desktop Runtime:** Tauri v2 + Rust + reqwest
+- **Frontend:** React + Vite + react-markdown
+- **Storage:** Local JSON files in the Tauri app data directory
+- **Legacy Reference:** FastAPI backend kept in-repo but not used at runtime
