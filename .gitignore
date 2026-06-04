@@ -19,3 +19,6 @@ data/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+
+# Tauri build artifacts
+frontend/src-tauri/target/

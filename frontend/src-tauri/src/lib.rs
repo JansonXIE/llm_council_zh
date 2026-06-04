@@ -24,6 +24,17 @@ const STREAM_EVENT_NAME: &str = "council-event";
 // ── Settings ──────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone, Default)]
+struct ModelEntry {
+    name: String,
+    #[serde(default = "default_true")]
+    active: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
 struct AppSettings {
     deepseek_api_key: String,
     deepseek_base_url: String,
@@ -34,6 +45,10 @@ struct AppSettings {
     glm_api_key: String,
     glm_base_url: String,
     data_dir: String,
+    #[serde(default)]
+    models: Vec<ModelEntry>,
+    #[serde(default)]
+    chairman_model: String,
 }
 
 // ── Core types ────────────────────────────────────────────────────────
@@ -241,15 +256,31 @@ fn build_council_config(settings: &AppSettings) -> CouncilConfig {
         })
         .filter(|models| !models.is_empty())
         .unwrap_or_else(|| {
-            DEFAULT_COUNCIL_MODELS
-                .iter()
-                .map(|model| (*model).to_string())
-                .collect()
+            // Use settings.models (active ones) if present; otherwise use hardcoded defaults
+            if settings.models.is_empty() {
+                DEFAULT_COUNCIL_MODELS
+                    .iter()
+                    .map(|model| (*model).to_string())
+                    .collect()
+            } else {
+                settings
+                    .models
+                    .iter()
+                    .filter(|entry| entry.active)
+                    .map(|entry| entry.name.clone())
+                    .collect()
+            }
         });
 
     let chairman_model = env_var("CHAIRMAN_MODEL")
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_CHAIRMAN_MODEL.to_string());
+        .unwrap_or_else(|| {
+            if !settings.chairman_model.is_empty() {
+                settings.chairman_model.clone()
+            } else {
+                DEFAULT_CHAIRMAN_MODEL.to_string()
+            }
+        });
 
     // Helper: prefer settings value, fall back to env var
     fn pick_key(settings_val: &str, env_name: &str) -> Option<String> {
@@ -1132,7 +1163,25 @@ fn start_council_stream(
 
 #[tauri::command]
 fn get_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
-    Ok(load_settings_from_file(&app_handle))
+    let mut settings = load_settings_from_file(&app_handle);
+
+    // Hydrate defaults: if models is empty, populate with DEFAULT_COUNCIL_MODELS (all active)
+    if settings.models.is_empty() {
+        settings.models = DEFAULT_COUNCIL_MODELS
+            .iter()
+            .map(|name| ModelEntry {
+                name: (*name).to_string(),
+                active: true,
+            })
+            .collect();
+    }
+
+    // Hydrate defaults: if chairman_model is empty, use DEFAULT_CHAIRMAN_MODEL
+    if settings.chairman_model.is_empty() {
+        settings.chairman_model = DEFAULT_CHAIRMAN_MODEL.to_string();
+    }
+
+    Ok(settings)
 }
 
 #[tauri::command]

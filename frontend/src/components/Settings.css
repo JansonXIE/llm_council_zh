@@ -233,3 +233,149 @@
 .settings-btn-icon {
   font-size: 16px;
 }
+
+/* ── Council Models section ── */
+
+.settings-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #333;
+  background: #fafafa;
+  appearance: auto;
+  cursor: pointer;
+}
+
+.settings-select:focus {
+  outline: none;
+  border-color: #4a90e2;
+  background: #fff;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+
+.model-row.model-dormant {
+  background: #f5f5f5;
+  opacity: 0.7;
+}
+
+.model-name-input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #333;
+  background: #fafafa;
+  min-width: 0;
+}
+
+.model-name-input:focus {
+  outline: none;
+  border-color: #4a90e2;
+  background: #fff;
+}
+
+/* ── Toggle switch ── */
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.toggle-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #ccc;
+  border-radius: 10px;
+  transition: background 0.3s;
+}
+
+.toggle-slider::before {
+  content: "";
+  position: absolute;
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background: #fff;
+  border-radius: 8px;
+  transition: transform 0.3s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: #4a90e2;
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+}
+
+.model-status-label {
+  font-size: 12px;
+  color: #666;
+  white-space: nowrap;
+  min-width: 28px;
+}
+
+.model-row.model-dormant .model-status-label {
+  color: #999;
+}
+
+.model-remove-btn {
+  background: none;
+  border: none;
+  font-size: 16px;
+  color: #999;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  line-height: 1;
+}
+
+.model-remove-btn:hover {
+  color: #d32f2f;
+  background: #ffeaea;
+}
+
+.model-add-btn {
+  background: #f0f0f0;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #666;
+  transition: all 0.2s;
+  margin-top: 4px;
+}
+
+.model-add-btn:hover {
+  background: #e8f0fe;
+  border-color: #4a90e2;
+  color: #4a90e2;
+}

@@ -38,6 +38,62 @@ export default function Settings({ isOpen, onClose }) {
     setSuccess(false);
   }
 
+  // Model management handlers
+  function handleModelNameChange(index, newName) {
+    setSettings(prev => {
+      const models = [...prev.models];
+      models[index] = { ...models[index], name: newName };
+      return { ...prev, models };
+    });
+    setSuccess(false);
+  }
+
+  function handleModelActiveToggle(index) {
+    setSettings(prev => {
+      const models = [...prev.models];
+      models[index] = { ...models[index], active: !models[index].active };
+      const toggledModel = models[index];
+      // If toggling off and this model is the chairman, reset chairman
+      if (!toggledModel.active && prev.chairman_model === toggledModel.name) {
+        const firstActive = models.find(m => m.active);
+        return {
+          ...prev,
+          models,
+          chairman_model: firstActive ? firstActive.name : '',
+        };
+      }
+      return { ...prev, models };
+    });
+    setSuccess(false);
+  }
+
+  function handleAddModel() {
+    setSettings(prev => ({
+      ...prev,
+      models: [...prev.models, { name: '', active: true }],
+    }));
+    setSuccess(false);
+  }
+
+  function handleRemoveModel(index) {
+    setSettings(prev => {
+      const removedModel = prev.models[index].name;
+      const models = prev.models.filter((_, i) => i !== index);
+      let chairman_model = prev.chairman_model;
+      if (removedModel === chairman_model) {
+        const firstActive = models.find(m => m.active);
+        chairman_model = firstActive ? firstActive.name : '';
+      }
+      return { ...prev, models, chairman_model };
+    });
+    setSuccess(false);
+  }
+
+  function handleChairmanChange(value) {
+    setSettings(prev => ({ ...prev, chairman_model: value }));
+    setSuccess(false);
+  }
+
   async function handlePickDataDir() {
     const selected = await open({
       directory: true,
@@ -53,7 +109,12 @@ export default function Settings({ isOpen, onClose }) {
     setSaving(true);
     setError(null);
     try {
-      await api.saveSettings(settings);
+      // Filter out models with empty names before saving
+      const toSave = {
+        ...settings,
+        models: settings.models.filter(m => m.name.trim() !== ''),
+      };
+      await api.saveSettings(toSave);
       setSuccess(true);
       setTimeout(() => {
         setSuccess(false);
@@ -100,6 +161,63 @@ export default function Settings({ isOpen, onClose }) {
               </div>
             </div>
           ))}
+
+          <div className="settings-group">
+            <h3 className="settings-group-title">Council Models</h3>
+            <div className="settings-field">
+              <label>Chairman Model</label>
+              <select
+                className="settings-select"
+                value={settings.chairman_model}
+                onChange={e => handleChairmanChange(e.target.value)}
+              >
+                {settings.models.filter(m => m.active).length === 0 && (
+                  <option value="" disabled>No active models</option>
+                )}
+                {settings.models
+                  .filter(m => m.active)
+                  .map(m => (
+                    <option key={m.name} value={m.name}>{m.name}</option>
+                  ))}
+              </select>
+              <div className="settings-field-hint">主席模型负责综合所有议员回复生成最终答案</div>
+            </div>
+            {settings.models.map((model, index) => (
+              <div key={index} className={`model-row ${!model.active ? 'model-dormant' : ''}`}>
+                <input
+                  type="text"
+                  className="model-name-input"
+                  value={model.name}
+                  onChange={e => handleModelNameChange(index, e.target.value)}
+                  placeholder="provider/model-name"
+                />
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={model.active}
+                    onChange={() => handleModelActiveToggle(index)}
+                  />
+                  <span className="toggle-slider"></span>
+                </label>
+                <span className="model-status-label">
+                  {model.active ? '在线' : '休眠'}
+                </span>
+                <button
+                  className="model-remove-btn"
+                  onClick={() => handleRemoveModel(index)}
+                  title="删除模型"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button className="model-add-btn" onClick={handleAddModel}>
+              + 添加模型
+            </button>
+            <div className="settings-field-hint">
+              切换「休眠」可临时排除模型参与讨论，不会永久删除
+            </div>
+          </div>
 
           <div className="settings-group">
             <h3 className="settings-group-title">数据存储</h3>

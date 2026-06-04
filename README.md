@@ -66,6 +66,11 @@ cd frontend
 npm run tauri dev
 ```
 
+## Desktop Build (Native Executable)
+```bash
+npm run tauri:build
+```
+
 That starts Vite and the Tauri desktop shell together. You no longer need a separate Python backend process.
 
 ## Local Persistence
