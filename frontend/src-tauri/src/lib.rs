@@ -945,6 +945,20 @@ async fn update_conversation_title(
     save_conversation(app_handle, config, &conversation).await
 }
 
+async fn delete_conversation_from_storage(
+    app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
+    conversation_id: &str,
+) -> Result<(), String> {
+    let path = conversation_path(app_handle, config, conversation_id).await?;
+    if !path.exists() {
+        return Err("Conversation not found".to_string());
+    }
+    tokio::fs::remove_file(path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 async fn append_user_message(
     app_handle: &AppHandle,
     config: &Arc<RwLock<CouncilConfig>>,
@@ -1162,6 +1176,15 @@ fn start_council_stream(
 }
 
 #[tauri::command]
+async fn delete_conversation(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<(), String> {
+    delete_conversation_from_storage(&app_handle, &state.config, &conversation_id).await
+}
+
+#[tauri::command]
 fn get_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
     let mut settings = load_settings_from_file(&app_handle);
 
@@ -1220,6 +1243,7 @@ pub fn run() {
             create_conversation,
             get_conversation,
             send_message,
+            delete_conversation,
             start_council_stream,
             get_settings,
             save_settings

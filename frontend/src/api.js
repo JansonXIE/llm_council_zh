@@ -87,4 +87,8 @@ export const api = {
   async saveSettings(settings) {
     return invoke('save_settings', { settings });
   },
+
+  async deleteConversation(conversationId) {
+    return invoke('delete_conversation', { conversationId });
+  },
 };

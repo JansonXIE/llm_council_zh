@@ -7,8 +7,16 @@ export default function Sidebar({
   currentConversationId,
   onSelectConversation,
   onNewConversation,
+  onDeleteConversation,
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  function handleDelete(e, id) {
+    e.stopPropagation();
+    if (window.confirm('确认删除此对话？')) {
+      onDeleteConversation(id);
+    }
+  }
 
   return (
     <div className="sidebar">
@@ -31,8 +39,17 @@ export default function Sidebar({
               }`}
               onClick={() => onSelectConversation(conv.id)}
             >
-              <div className="conversation-title">
-                {conv.title || 'New Conversation'}
+              <div className="conversation-title-row">
+                <div className="conversation-title">
+                  {conv.title || 'New Conversation'}
+                </div>
+                <button
+                  className="conversation-delete-btn"
+                  onClick={(e) => handleDelete(e, conv.id)}
+                  title="删除对话"
+                >
+                  ×
+                </button>
               </div>
               <div className="conversation-meta">
                 {conv.message_count} messages
