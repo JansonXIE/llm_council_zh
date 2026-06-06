@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../api';
 import { open, ask, message } from '@tauri-apps/plugin-dialog';
 import { check } from '@tauri-apps/plugin-updater';
+import { getVersion } from '@tauri-apps/api/app';
 import './Settings.css';
 
 const SETTINGS_FIELDS = [
@@ -16,12 +17,23 @@ export default function Settings({ isOpen, onClose }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
+  const [appVersion, setAppVersion] = useState('');
 
   useEffect(() => {
     if (isOpen) {
       loadSettings();
+      fetchAppVersion();
     }
   }, [isOpen]);
+
+  async function fetchAppVersion() {
+    try {
+      const version = await getVersion();
+      setAppVersion(version);
+    } catch (e) {
+      console.error('Failed to get app version:', e);
+    }
+  }
 
   async function loadSettings() {
     try {
@@ -242,6 +254,10 @@ export default function Settings({ isOpen, onClose }) {
           <div className="settings-group">
             <h3 className="settings-group-title">关于与更新</h3>
             <div className="settings-field" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <label style={{ marginBottom: 0 }}>当前版本</label>
+              <span style={{ color: '#666', fontSize: '14px' }}>{appVersion ? `v${appVersion}` : '...'}</span>
+            </div>
+            <div className="settings-field" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '12px' }}>
               <label style={{ marginBottom: 0 }}>自动检查更新</label>
               <label className="toggle-switch">
                 <input
