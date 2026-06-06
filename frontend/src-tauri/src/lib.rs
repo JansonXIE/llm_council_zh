@@ -447,6 +447,34 @@ fn serialize_value<T: Serialize>(value: &T) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
+fn extract_conversation_history(conversation: &Conversation, max_turns: usize) -> Vec<ChatMessage> {
+    let mut history = Vec::new();
+    let mut turns = 0;
+    for msg in conversation.messages.iter().rev() {
+        if msg.role == "assistant" {
+            if let Some(stage3) = &msg.stage3 {
+                history.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: stage3.response.clone(),
+                });
+            }
+        } else if msg.role == "user" {
+            if let Some(content) = &msg.content {
+                history.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: content.clone(),
+                });
+                turns += 1;
+                if turns >= max_turns {
+                    break;
+                }
+            }
+        }
+    }
+    history.reverse();
+    history
+}
+
 // ── Query model ───────────────────────────────────────────────────────
 
 async fn query_model(
@@ -555,12 +583,14 @@ async fn query_models_parallel(
 async fn stage1_collect_responses(
     client: &Client,
     config: Arc<RwLock<CouncilConfig>>,
+    history: &[ChatMessage],
     user_query: &str,
 ) -> Vec<Stage1Response> {
-    let messages = vec![ChatMessage {
+    let mut messages = history.to_vec();
+    messages.push(ChatMessage {
         role: "user".to_string(),
         content: user_query.to_string(),
-    }];
+    });
 
     let models = {
         let cfg = config.read().unwrap();
@@ -582,6 +612,7 @@ async fn stage1_collect_responses(
 async fn stage2_collect_rankings(
     client: &Client,
     config: Arc<RwLock<CouncilConfig>>,
+    history: &[ChatMessage],
     user_query: &str,
     stage1_results: &[Stage1Response],
 ) -> (Vec<Stage2Response>, HashMap<String, String>) {
@@ -606,10 +637,11 @@ async fn stage2_collect_rankings(
         "Please reply in Chinese. You are evaluating different responses to the following question:\n\nQuestion: {user_query}\n\nHere are the responses from different models (anonymized):\n\n{responses_text}\n\nYour task:\n1. First, evaluate each response individually. For each response, explain what it does well and what it does poorly.\n2. Then, at the very end of your response, provide a final ranking.\n\nIMPORTANT: Your final ranking MUST be formatted EXACTLY as follows:\n- Start with the line \"FINAL RANKING:\" (all caps, with colon)\n- Then list the responses from best to worst as a numbered list\n- Each line should be: number, period, space, then ONLY the response label (e.g., \"1. Response A\")\n- Do not add any other text or explanations in the ranking section\n\nExample of the correct format for your ENTIRE response:\n\nResponse A provides good detail on X but misses Y...\nResponse B is accurate but lacks depth on Z...\nResponse C offers the most comprehensive answer...\n\nFINAL RANKING:\n1. Response C\n2. Response A\n3. Response B\n\nNow provide your evaluation and ranking:"
     );
 
-    let messages = vec![ChatMessage {
+    let mut messages = history.to_vec();
+    messages.push(ChatMessage {
         role: "user".to_string(),
         content: ranking_prompt,
-    }];
+    });
 
     let models = config.read().unwrap().council_models.clone();
 
@@ -631,6 +663,7 @@ async fn stage2_collect_rankings(
 async fn stage3_synthesize_final(
     client: &Client,
     config: Arc<RwLock<CouncilConfig>>,
+    history: &[ChatMessage],
     user_query: &str,
     stage1_results: &[Stage1Response],
     stage2_results: &[Stage2Response],
@@ -651,10 +684,11 @@ async fn stage3_synthesize_final(
         "Please reply in Chinese. You are the Chairman of an LLM Council. Multiple AI models have provided responses to a user's question, and then ranked each other's responses.\n\nOriginal Question: {user_query}\n\nSTAGE 1 - Individual Responses:\n{stage1_text}\n\nSTAGE 2 - Peer Rankings:\n{stage2_text}\n\nYour task as Chairman is to synthesize all of this information into a single, comprehensive, accurate answer to the user's original question. Consider:\n- The individual responses and their insights\n- The peer rankings and what they reveal about response quality\n- Any patterns of agreement or disagreement\n\nProvide a clear, well-reasoned final answer that represents the council's collective wisdom:"
     );
 
-    let messages = vec![ChatMessage {
+    let mut messages = history.to_vec();
+    messages.push(ChatMessage {
         role: "user".to_string(),
         content: chairman_prompt,
-    }];
+    });
 
     let chairman_model = {
         let cfg = config.read().unwrap();
@@ -782,9 +816,10 @@ async fn generate_conversation_title(
 async fn run_full_council(
     client: &Client,
     config: Arc<RwLock<CouncilConfig>>,
+    history: &[ChatMessage],
     user_query: &str,
 ) -> SendMessageResponse {
-    let stage1 = stage1_collect_responses(client, config.clone(), user_query).await;
+    let stage1 = stage1_collect_responses(client, config.clone(), history, user_query).await;
 
     if stage1.is_empty() {
         return SendMessageResponse {
@@ -799,10 +834,10 @@ async fn run_full_council(
     }
 
     let (stage2, label_to_model) =
-        stage2_collect_rankings(client, config.clone(), user_query, &stage1).await;
+        stage2_collect_rankings(client, config.clone(), history, user_query, &stage1).await;
     let aggregate_rankings = calculate_aggregate_rankings(&stage2, &label_to_model);
     let stage3 =
-        stage3_synthesize_final(client, config.clone(), user_query, &stage1, &stage2).await;
+        stage3_synthesize_final(client, config.clone(), history, user_query, &stage1, &stage2).await;
 
     SendMessageResponse {
         stage1,
@@ -1014,6 +1049,8 @@ async fn run_streaming_council(
     let conversation =
         load_conversation_from_storage(&app_handle, &config, &conversation_id).await?;
     let is_first_message = conversation.messages.is_empty();
+    
+    let history = extract_conversation_history(&conversation, 3);
 
     append_user_message(&app_handle, &config, &conversation_id, content.clone()).await?;
 
@@ -1029,7 +1066,7 @@ async fn run_streaming_council(
     };
 
     emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage1_start"))?;
-    let stage1 = stage1_collect_responses(&client, config.clone(), &content).await;
+    let stage1 = stage1_collect_responses(&client, config.clone(), &history, &content).await;
     emit_stream_event(
         &window,
         StreamEvent::new(&conversation_id, "stage1_complete").with_data(serialize_value(&stage1)?),
@@ -1058,7 +1095,7 @@ async fn run_streaming_council(
     } else {
         emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage2_start"))?;
         let (stage2, label_to_model) =
-            stage2_collect_rankings(&client, config.clone(), &content, &stage1).await;
+            stage2_collect_rankings(&client, config.clone(), &history, &content, &stage1).await;
         let metadata = CouncilMetadata {
             aggregate_rankings: calculate_aggregate_rankings(&stage2, &label_to_model),
             label_to_model,
@@ -1072,7 +1109,7 @@ async fn run_streaming_council(
 
         emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage3_start"))?;
         let stage3 =
-            stage3_synthesize_final(&client, config.clone(), &content, &stage1, &stage2).await;
+            stage3_synthesize_final(&client, config.clone(), &history, &content, &stage1, &stage2).await;
         emit_stream_event(
             &window,
             StreamEvent::new(&conversation_id, "stage3_complete")
@@ -1143,6 +1180,8 @@ async fn send_message(
         load_conversation_from_storage(&app_handle, &state.config, &conversation_id).await?;
     let is_first_message = conversation.messages.is_empty();
 
+    let history = extract_conversation_history(&conversation, 3);
+
     append_user_message(
         &app_handle,
         &state.config,
@@ -1157,7 +1196,7 @@ async fn send_message(
         update_conversation_title(&app_handle, &state.config, &conversation_id, title).await?;
     }
 
-    let response = run_full_council(&state.client, state.config.clone(), &content).await;
+    let response = run_full_council(&state.client, state.config.clone(), &history, &content).await;
     append_assistant_message(&app_handle, &state.config, &conversation_id, &response).await?;
     Ok(response)
 }
