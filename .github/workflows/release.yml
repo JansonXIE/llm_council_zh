@@ -66,6 +66,8 @@ jobs:
           releaseDraft: false
           prerelease: false
           tauriPath: frontend/src-tauri
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
 
   build-linux:
     runs-on: ubuntu-latest
@@ -138,3 +140,5 @@ jobs:
           releaseDraft: false
           prerelease: false
           tauriPath: frontend/src-tauri
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
