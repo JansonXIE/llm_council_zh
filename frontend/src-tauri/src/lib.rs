@@ -777,7 +777,7 @@ async fn generate_conversation_title(
     user_query: &str,
 ) -> String {
     let title_prompt = format!(
-        "Generate a very short title (3-5 words maximum) that summarizes the following question.\nThe title should be concise and descriptive. Do not use quotes or punctuation in the title.\n\nQuestion: {user_query}\n\nTitle:"
+        "请为以下问题生成一个非常简短的中文标题（最多5个汉字，如有可能请不要超过8个字）。\n标题必须简洁且具有概括性，不要包含任何标点符号或引号。\n\n问题：{user_query}\n\n标题："
     );
 
     let messages = vec![ChatMessage {
@@ -794,7 +794,7 @@ async fn generate_conversation_title(
 
     let mut title = response
         .map(|reply| reply.content)
-        .unwrap_or_else(|| "New Conversation".to_string())
+        .unwrap_or_else(|| "新对话".to_string())
         .replace(['\r', '\n'], " ")
         .trim()
         .trim_matches('"')
@@ -802,7 +802,7 @@ async fn generate_conversation_title(
         .to_string();
 
     if title.is_empty() {
-        title = "New Conversation".to_string();
+        title = "新对话".to_string();
     }
 
     if title.len() > 50 {
@@ -970,7 +970,7 @@ async fn create_conversation_in_storage(
     let conversation = Conversation {
         id: Uuid::new_v4().to_string(),
         created_at: Utc::now().to_rfc3339(),
-        title: "New Conversation".to_string(),
+        title: "新对话".to_string(),
         messages: Vec::new(),
     };
 
