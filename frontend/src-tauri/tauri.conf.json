@@ -46,5 +46,13 @@
       "icons/icon.ico",
       "icons/icon.png"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/JansonXIE/llm_council_zh/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ3QzQzREREM0FFMTFDMQpSV1RCRWE3VDNVTjhEYUlEZk1CTkdaa3ZGMVFWbU9iOVVXOHNXTHltUnhqNjhENzBOOGNZZWVKcgo="
+    }
   }
 }

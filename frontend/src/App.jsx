@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import { api } from './api';
+import { check } from '@tauri-apps/plugin-updater';
+import { ask, message } from '@tauri-apps/plugin-dialog';
 import './App.css';
 
 function App() {
@@ -34,7 +36,29 @@ function App() {
       }
     };
 
+    const checkAutoUpdate = async () => {
+      try {
+        const settings = await api.getSettings();
+        if (settings.auto_update !== false) {
+          const update = await check();
+          if (update) {
+            const yes = await ask(`发现新版本 ${update.version}\n\n是否立即下载并更新？`, {
+              title: '发现新版本',
+              kind: 'info',
+            });
+            if (yes) {
+              await update.downloadAndInstall();
+              await message('更新包下载并安装完成，请重新启动应用以应用更新。', { title: '更新成功', kind: 'info' });
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Auto update check failed:', error);
+      }
+    };
+
     loadInitialConversations();
+    checkAutoUpdate();
 
     return () => {
       isCancelled = true;

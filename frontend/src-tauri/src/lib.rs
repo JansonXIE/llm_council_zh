@@ -49,6 +49,8 @@ struct AppSettings {
     models: Vec<ModelEntry>,
     #[serde(default)]
     chairman_model: String,
+    #[serde(default = "default_true")]
+    auto_update: bool,
 }
 
 // ── Core types ────────────────────────────────────────────────────────
@@ -659,14 +661,7 @@ async fn stage3_synthesize_final(
         cfg.chairman_model.clone()
     }; // cfg dropped
 
-    let response = query_model(
-        client,
-        &config,
-        &chairman_model,
-        &messages,
-        120.0,
-    )
-    .await;
+    let response = query_model(client, &config, &chairman_model, &messages, 120.0).await;
 
     Stage3Response {
         model: chairman_model,
@@ -685,7 +680,11 @@ fn parse_ranking_from_text(ranking_text: &str) -> Vec<String> {
         if !numbered_matches.is_empty() {
             return numbered_matches
                 .into_iter()
-                .filter_map(|capture| pattern.find(capture.as_str()).map(|value| value.as_str().to_string()))
+                .filter_map(|capture| {
+                    pattern
+                        .find(capture.as_str())
+                        .map(|value| value.as_str().to_string())
+                })
                 .collect();
         }
 
@@ -757,14 +756,7 @@ async fn generate_conversation_title(
         cfg.chairman_model.clone()
     }; // cfg dropped
 
-    let response = query_model(
-        client,
-        &config,
-        &chairman_model,
-        &messages,
-        30.0,
-    )
-    .await;
+    let response = query_model(client, &config, &chairman_model, &messages, 30.0).await;
 
     let mut title = response
         .map(|reply| reply.content)
@@ -806,9 +798,11 @@ async fn run_full_council(
         };
     }
 
-    let (stage2, label_to_model) = stage2_collect_rankings(client, config.clone(), user_query, &stage1).await;
+    let (stage2, label_to_model) =
+        stage2_collect_rankings(client, config.clone(), user_query, &stage1).await;
     let aggregate_rankings = calculate_aggregate_rankings(&stage2, &label_to_model);
-    let stage3 = stage3_synthesize_final(client, config.clone(), user_query, &stage1, &stage2).await;
+    let stage3 =
+        stage3_synthesize_final(client, config.clone(), user_query, &stage1, &stage2).await;
 
     SendMessageResponse {
         stage1,
@@ -823,7 +817,10 @@ async fn run_full_council(
 
 // ── Conversation storage ──────────────────────────────────────────────
 
-async fn conversation_directory(app_handle: &AppHandle, config: &Arc<RwLock<CouncilConfig>>) -> Result<PathBuf, String> {
+async fn conversation_directory(
+    app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
+) -> Result<PathBuf, String> {
     let directory = {
         let cfg = config.read().unwrap();
         if let Some(data_dir) = &cfg.data_dir {
@@ -844,13 +841,21 @@ async fn conversation_directory(app_handle: &AppHandle, config: &Arc<RwLock<Coun
     Ok(directory)
 }
 
-async fn conversation_path(app_handle: &AppHandle, config: &Arc<RwLock<CouncilConfig>>, conversation_id: &str) -> Result<PathBuf, String> {
+async fn conversation_path(
+    app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
+    conversation_id: &str,
+) -> Result<PathBuf, String> {
     let mut path = conversation_directory(app_handle, config).await?;
     path.push(format!("{conversation_id}.json"));
     Ok(path)
 }
 
-async fn save_conversation(app_handle: &AppHandle, config: &Arc<RwLock<CouncilConfig>>, conversation: &Conversation) -> Result<(), String> {
+async fn save_conversation(
+    app_handle: &AppHandle,
+    config: &Arc<RwLock<CouncilConfig>>,
+    conversation: &Conversation,
+) -> Result<(), String> {
     let path = conversation_path(app_handle, config, &conversation.id).await?;
     let payload = serde_json::to_vec_pretty(conversation).map_err(|error| error.to_string())?;
     tokio::fs::write(path, payload)
@@ -885,7 +890,11 @@ async fn list_conversations_from_storage(
         .map_err(|error| error.to_string())?;
     let mut conversations = Vec::new();
 
-    while let Some(entry) = entries.next_entry().await.map_err(|error| error.to_string())? {
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| error.to_string())?
+    {
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
@@ -940,7 +949,8 @@ async fn update_conversation_title(
     conversation_id: &str,
     title: String,
 ) -> Result<(), String> {
-    let mut conversation = load_conversation_from_storage(app_handle, config, conversation_id).await?;
+    let mut conversation =
+        load_conversation_from_storage(app_handle, config, conversation_id).await?;
     conversation.title = title;
     save_conversation(app_handle, config, &conversation).await
 }
@@ -965,7 +975,8 @@ async fn append_user_message(
     conversation_id: &str,
     content: String,
 ) -> Result<(), String> {
-    let mut conversation = load_conversation_from_storage(app_handle, config, conversation_id).await?;
+    let mut conversation =
+        load_conversation_from_storage(app_handle, config, conversation_id).await?;
     conversation.messages.push(user_message(content));
     save_conversation(app_handle, config, &conversation).await
 }
@@ -976,7 +987,8 @@ async fn append_assistant_message(
     conversation_id: &str,
     response: &SendMessageResponse,
 ) -> Result<(), String> {
-    let mut conversation = load_conversation_from_storage(app_handle, config, conversation_id).await?;
+    let mut conversation =
+        load_conversation_from_storage(app_handle, config, conversation_id).await?;
     conversation
         .messages
         .push(assistant_message_from_response(response));
@@ -999,7 +1011,8 @@ async fn run_streaming_council(
     conversation_id: String,
     content: String,
 ) -> Result<(), String> {
-    let conversation = load_conversation_from_storage(&app_handle, &config, &conversation_id).await?;
+    let conversation =
+        load_conversation_from_storage(&app_handle, &config, &conversation_id).await?;
     let is_first_message = conversation.messages.is_empty();
 
     append_user_message(&app_handle, &config, &conversation_id, content.clone()).await?;
@@ -1024,35 +1037,28 @@ async fn run_streaming_council(
 
     let (stage2, metadata, stage3) = if stage1.is_empty() {
         let empty_metadata = CouncilMetadata::default();
-        emit_stream_event(
-            &window,
-            StreamEvent::new(&conversation_id, "stage2_start"),
-        )?;
+        emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage2_start"))?;
         emit_stream_event(
             &window,
             StreamEvent::new(&conversation_id, "stage2_complete")
                 .with_data(json!([]))
                 .with_metadata(empty_metadata.clone()),
         )?;
-        emit_stream_event(
-            &window,
-            StreamEvent::new(&conversation_id, "stage3_start"),
-        )?;
+        emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage3_start"))?;
         let stage3 = Stage3Response {
             model: "error".to_string(),
             response: "All models failed to respond. Please try again.".to_string(),
         };
         emit_stream_event(
             &window,
-            StreamEvent::new(&conversation_id, "stage3_complete").with_data(serialize_value(&stage3)?),
+            StreamEvent::new(&conversation_id, "stage3_complete")
+                .with_data(serialize_value(&stage3)?),
         )?;
         (Vec::new(), empty_metadata, stage3)
     } else {
-        emit_stream_event(
-            &window,
-            StreamEvent::new(&conversation_id, "stage2_start"),
-        )?;
-        let (stage2, label_to_model) = stage2_collect_rankings(&client, config.clone(), &content, &stage1).await;
+        emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage2_start"))?;
+        let (stage2, label_to_model) =
+            stage2_collect_rankings(&client, config.clone(), &content, &stage1).await;
         let metadata = CouncilMetadata {
             aggregate_rankings: calculate_aggregate_rankings(&stage2, &label_to_model),
             label_to_model,
@@ -1064,21 +1070,21 @@ async fn run_streaming_council(
                 .with_metadata(metadata.clone()),
         )?;
 
+        emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage3_start"))?;
+        let stage3 =
+            stage3_synthesize_final(&client, config.clone(), &content, &stage1, &stage2).await;
         emit_stream_event(
             &window,
-            StreamEvent::new(&conversation_id, "stage3_start"),
-        )?;
-        let stage3 = stage3_synthesize_final(&client, config.clone(), &content, &stage1, &stage2).await;
-        emit_stream_event(
-            &window,
-            StreamEvent::new(&conversation_id, "stage3_complete").with_data(serialize_value(&stage3)?),
+            StreamEvent::new(&conversation_id, "stage3_complete")
+                .with_data(serialize_value(&stage3)?),
         )?;
         (stage2, metadata, stage3)
     };
 
     if let Some(title_task) = title_task {
         if let Ok(title) = title_task.await {
-            update_conversation_title(&app_handle, &config, &conversation_id, title.clone()).await?;
+            update_conversation_title(&app_handle, &config, &conversation_id, title.clone())
+                .await?;
             emit_stream_event(
                 &window,
                 StreamEvent::new(&conversation_id, "title_complete")
@@ -1102,12 +1108,18 @@ async fn run_streaming_council(
 // ── Tauri commands ────────────────────────────────────────────────────
 
 #[tauri::command]
-async fn list_conversations(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Vec<ConversationMetadata>, String> {
+async fn list_conversations(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<ConversationMetadata>, String> {
     list_conversations_from_storage(&app_handle, &state.config).await
 }
 
 #[tauri::command]
-async fn create_conversation(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Conversation, String> {
+async fn create_conversation(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Conversation, String> {
     create_conversation_in_storage(&app_handle, &state.config).await
 }
 
@@ -1127,13 +1139,21 @@ async fn send_message(
     conversation_id: String,
     content: String,
 ) -> Result<SendMessageResponse, String> {
-    let conversation = load_conversation_from_storage(&app_handle, &state.config, &conversation_id).await?;
+    let conversation =
+        load_conversation_from_storage(&app_handle, &state.config, &conversation_id).await?;
     let is_first_message = conversation.messages.is_empty();
 
-    append_user_message(&app_handle, &state.config, &conversation_id, content.clone()).await?;
+    append_user_message(
+        &app_handle,
+        &state.config,
+        &conversation_id,
+        content.clone(),
+    )
+    .await?;
 
     if is_first_message {
-        let title = generate_conversation_title(&state.client, state.config.clone(), &content).await;
+        let title =
+            generate_conversation_title(&state.client, state.config.clone(), &content).await;
         update_conversation_title(&app_handle, &state.config, &conversation_id, title).await?;
     }
 
@@ -1231,6 +1251,7 @@ fn save_settings(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_handle = app.handle().clone();

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, ask, message } from '@tauri-apps/plugin-dialog';
+import { check } from '@tauri-apps/plugin-updater';
 import './Settings.css';
 
 const SETTINGS_FIELDS = [
@@ -236,6 +237,22 @@ export default function Settings({ isOpen, onClose }) {
               </div>
               <div className="settings-field-hint">留空使用应用默认数据目录，点击更改按钮选择自定义目录</div>
             </div>
+          </div>
+
+          <div className="settings-group">
+            <h3 className="settings-group-title">关于与更新</h3>
+            <div className="settings-field" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <label style={{ marginBottom: 0 }}>自动检查更新</label>
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={settings.auto_update !== false}
+                  onChange={e => handleChange('auto_update', e.target.checked)}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="settings-field-hint">启动时自动检查是否有新版本可用</div>
           </div>
         </div>
 
