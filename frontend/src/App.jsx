@@ -58,6 +58,8 @@ function App() {
         }
       } catch (error) {
         console.error('Auto update check failed:', error);
+        // 仅在用户手动触发或调试时提示；自动检查失败保持安静，
+        // 但把详细错误写入控制台便于排查（如签名/URL 问题）。
       }
     };
 

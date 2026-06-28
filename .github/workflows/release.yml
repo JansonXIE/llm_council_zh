@@ -174,9 +174,17 @@ jobs:
             fi
             PLATFORMS="$(node -e "
               const p = JSON.parse(process.argv[1]);
-              p[process.argv[2]] = { signature: process.argv[3], url: process.argv[4] };
+              const key = process.argv[2];
+              const sig = process.argv[3];
+              const base = process.argv[4];
+              const file = process.argv[5];
+              // URL-encode the file name (e.g. spaces -> %20) so Tauri's
+              // updater can fetch installers whose names contain spaces
+              // (e.g. 'LLM Council_0.2.9_x64-setup.exe').
+              const url = base + '/' + encodeURIComponent(file);
+              p[key] = { signature: sig, url };
               console.log(JSON.stringify(p));
-            " "$PLATFORMS" "$key" "$sig" "${BASE}/${file}")"
+            " "$PLATFORMS" "$key" "$sig" "$BASE" "$file")"
           }
 
           add_platform "windows-x86_64" "$(read_sig "$WIN_SIG")" "$WIN_EXE"
