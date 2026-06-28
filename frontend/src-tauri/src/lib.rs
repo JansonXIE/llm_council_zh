@@ -11,14 +11,6 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use uuid::Uuid;
 
-const DEFAULT_COUNCIL_MODELS: &[&str] = &[
-    "deepseek/DeepSeek-V4-Pro",
-    "minimax/MiniMax-M3",
-    "kimi/Kimi-K2.6",
-    "glm/GLM-5.1",
-];
-
-const DEFAULT_CHAIRMAN_MODEL: &str = "deepseek/DeepSeek-V4-Pro";
 const STREAM_EVENT_NAME: &str = "council-event";
 
 // ── Settings ──────────────────────────────────────────────────────────
@@ -26,8 +18,18 @@ const STREAM_EVENT_NAME: &str = "council-event";
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct ModelEntry {
     name: String,
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    base_url: String,
+    #[serde(default = "default_api_format")]
+    api_format: String,
     #[serde(default = "default_true")]
     active: bool,
+}
+
+fn default_api_format() -> String {
+    "openai".to_string()
 }
 
 fn default_true() -> bool {
@@ -36,14 +38,6 @@ fn default_true() -> bool {
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct AppSettings {
-    deepseek_api_key: String,
-    deepseek_base_url: String,
-    minimax_api_key: String,
-    minimax_base_url: String,
-    kimi_api_key: String,
-    kimi_base_url: String,
-    glm_api_key: String,
-    glm_base_url: String,
     data_dir: String,
     #[serde(default)]
     models: Vec<ModelEntry>,
@@ -65,14 +59,8 @@ struct AppState {
 struct CouncilConfig {
     chairman_model: String,
     council_models: Vec<String>,
-    providers: HashMap<String, ProviderConfig>,
+    model_registry: HashMap<String, ModelEntry>,
     data_dir: Option<String>,
-}
-
-#[derive(Clone)]
-struct ProviderConfig {
-    api_key: Option<String>,
-    base_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -218,13 +206,11 @@ fn env_var(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn chat_completions_base_url(env_name: &str) -> Option<String> {
-    let base = env_var(env_name)?;
-    let trimmed = base.trim_end_matches('/');
+fn normalize_chat_completions_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return None;
     }
-
     if trimmed.ends_with("/chat/completions") {
         Some(trimmed.to_string())
     } else {
@@ -232,21 +218,44 @@ fn chat_completions_base_url(env_name: &str) -> Option<String> {
     }
 }
 
-fn apply_base_url(raw: &str) -> Option<String> {
-    let trimmed = raw.trim_end_matches('/');
+fn normalize_anthropic_messages_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return None;
     }
-    if trimmed.ends_with("/chat/completions") {
+    if trimmed.ends_with("/messages") {
         Some(trimmed.to_string())
     } else {
-        Some(format!("{trimmed}/chat/completions"))
+        Some(format!("{trimmed}/messages"))
+    }
+}
+
+fn normalize_gemini_generate_content_url(raw: &str, model: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.contains(":generateContent") {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("{trimmed}/models/{model}:generateContent"))
     }
 }
 
 fn build_council_config(settings: &AppSettings) -> CouncilConfig {
     dotenvy::dotenv().ok();
 
+    // Build model registry from settings.models
+    let mut model_registry: HashMap<String, ModelEntry> = HashMap::new();
+    for entry in &settings.models {
+        let trimmed_name = entry.name.trim().to_string();
+        if trimmed_name.is_empty() {
+            continue;
+        }
+        model_registry.insert(trimmed_name.clone(), entry.clone());
+    }
+
+    // Council models: active entries from registry
     let council_models = env_var("COUNCIL_MODELS")
         .map(|value| {
             value
@@ -258,85 +267,19 @@ fn build_council_config(settings: &AppSettings) -> CouncilConfig {
         })
         .filter(|models| !models.is_empty())
         .unwrap_or_else(|| {
-            // Use settings.models (active ones) if present; otherwise use hardcoded defaults
-            if settings.models.is_empty() {
-                DEFAULT_COUNCIL_MODELS
-                    .iter()
-                    .map(|model| (*model).to_string())
-                    .collect()
-            } else {
-                settings
-                    .models
-                    .iter()
-                    .filter(|entry| entry.active)
-                    .map(|entry| entry.name.clone())
-                    .collect()
-            }
+            settings
+                .models
+                .iter()
+                .filter(|entry| entry.active && !entry.name.trim().is_empty())
+                .map(|entry| entry.name.trim().to_string())
+                .collect()
         });
 
-    let chairman_model = env_var("CHAIRMAN_MODEL")
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            if !settings.chairman_model.is_empty() {
-                settings.chairman_model.clone()
-            } else {
-                DEFAULT_CHAIRMAN_MODEL.to_string()
-            }
-        });
-
-    // Helper: prefer settings value, fall back to env var
-    fn pick_key(settings_val: &str, env_name: &str) -> Option<String> {
-        if !settings_val.is_empty() {
-            Some(settings_val.to_string())
-        } else {
-            env_var(env_name)
-        }
-    }
-
-    fn pick_url(settings_val: &str, env_name: &str) -> Option<String> {
-        if !settings_val.is_empty() {
-            apply_base_url(settings_val)
-        } else {
-            chat_completions_base_url(env_name)
-        }
-    }
-
-    let mut providers = HashMap::new();
-    providers.insert(
-        "deepseek".to_string(),
-        ProviderConfig {
-            api_key: pick_key(&settings.deepseek_api_key, "DEEPSEEK_API_KEY"),
-            base_url: pick_url(&settings.deepseek_base_url, "DEEPSEEK_BASE_URL"),
-        },
-    );
-    providers.insert(
-        "minimax".to_string(),
-        ProviderConfig {
-            api_key: pick_key(&settings.minimax_api_key, "MINIMAX_API_KEY"),
-            base_url: pick_url(&settings.minimax_base_url, "MINIMAX_BASE_URL"),
-        },
-    );
-    providers.insert(
-        "kimi".to_string(),
-        ProviderConfig {
-            api_key: pick_key(&settings.kimi_api_key, "KIMI_API_KEY"),
-            base_url: pick_url(&settings.kimi_base_url, "KIMI_BASE_URL"),
-        },
-    );
-    providers.insert(
-        "glm".to_string(),
-        ProviderConfig {
-            api_key: pick_key(&settings.glm_api_key, "GLM_API_KEY"),
-            base_url: pick_url(&settings.glm_base_url, "GLM_BASE_URL"),
-        },
-    );
-    providers.insert(
-        "openrouter".to_string(),
-        ProviderConfig {
-            api_key: env_var("OPENROUTER_API_KEY"),
-            base_url: Some("https://openrouter.ai/api/v1/chat/completions".to_string()),
-        },
-    );
+    let chairman_model = if !settings.chairman_model.trim().is_empty() {
+        settings.chairman_model.trim().to_string()
+    } else {
+        env_var("CHAIRMAN_MODEL").unwrap_or_default()
+    };
 
     // Data directory: prefer settings, fall back to default
     let data_dir = if !settings.data_dir.is_empty() {
@@ -348,7 +291,7 @@ fn build_council_config(settings: &AppSettings) -> CouncilConfig {
     CouncilConfig {
         chairman_model,
         council_models,
-        providers,
+        model_registry,
         data_dir,
     }
 }
@@ -443,6 +386,94 @@ fn extract_content(data: &Value) -> String {
         .unwrap_or_default()
 }
 
+fn extract_anthropic_content(data: &Value) -> String {
+    data["content"]
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn extract_gemini_content(data: &Value) -> String {
+    data["candidates"]
+        .as_array()
+        .map(|candidates| {
+            candidates
+                .iter()
+                .flat_map(|candidate| {
+                    candidate["content"]["parts"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .filter_map(|part| part.get("text").and_then(Value::as_str).map(ToOwned::to_owned))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn split_system_messages(messages: &[ChatMessage]) -> (String, Vec<ChatMessage>) {
+    let system = messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .map(|message| message.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let conversation = messages
+        .iter()
+        .filter(|message| message.role != "system")
+        .cloned()
+        .collect::<Vec<_>>();
+
+    (system, conversation)
+}
+
+fn anthropic_payload(model: &str, messages: &[ChatMessage]) -> Value {
+    let (system, conversation) = split_system_messages(messages);
+    let mut payload = json!({
+        "model": model,
+        "max_tokens": 4096,
+        "messages": conversation,
+    });
+    if !system.is_empty() {
+        payload["system"] = json!(system);
+    }
+    payload
+}
+
+fn gemini_payload(messages: &[ChatMessage]) -> Value {
+    let (system, conversation) = split_system_messages(messages);
+    let contents = conversation
+        .iter()
+        .map(|message| {
+            json!({
+                "role": if message.role == "assistant" { "model" } else { "user" },
+                "parts": [{ "text": message.content }],
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut payload = json!({
+        "contents": contents,
+        "generationConfig": {
+            "maxOutputTokens": 4096,
+        },
+    });
+    if !system.is_empty() {
+        payload["systemInstruction"] = json!({
+            "parts": [{ "text": system }],
+        });
+    }
+    payload
+}
+
 fn serialize_value<T: Serialize>(value: &T) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
@@ -485,46 +516,59 @@ async fn query_model(
     timeout_secs: f64,
 ) -> Option<ModelReply> {
     // Extract needed data from config and release lock immediately
-    let (api_key, api_url, request_model) = {
+    let (api_key, api_url, request_model, api_format) = {
         let cfg = config.read().unwrap();
 
-        let (provider_name, provider_model_id) = model
-            .split_once('/')
-            .map(|(provider, actual)| (provider.to_lowercase(), actual.to_string()))
-            .unwrap_or_else(|| ("openrouter".to_string(), model.to_string()));
+        // Look up the model entry directly in the registry
+        let entry = cfg.model_registry.get(model)?;
 
-        let provider = cfg
-            .providers
-            .get(&provider_name)
-            .filter(|provider| provider.api_key.is_some() && provider.base_url.is_some());
-
-        if let Some(provider) = provider {
-            (
-                provider.api_key.clone().unwrap_or_default(),
-                provider.base_url.clone().unwrap_or_default(),
-                provider_model_id,
-            )
+        let key = if entry.api_key.trim().is_empty() {
+            return None;
         } else {
-            let fallback = cfg.providers.get("openrouter")?;
-            (
-                fallback.api_key.clone()?,
-                fallback.base_url.clone()?,
-                model.to_string(),
-            )
-        }
+            entry.api_key.trim().to_string()
+        };
+
+        let format = if entry.api_format.trim().is_empty() {
+            default_api_format()
+        } else {
+            entry.api_format.trim().to_string()
+        };
+        let request_model = entry.name.trim().to_string();
+        let url = match format.as_str() {
+            "anthropic_messages" => normalize_anthropic_messages_url(&entry.base_url)?,
+            "gemini_messages" => normalize_gemini_generate_content_url(&entry.base_url, &request_model)?,
+            _ => normalize_chat_completions_url(&entry.base_url)?,
+        };
+
+        // The request model id sent to the API is exactly the model name entered by the user.
+        (key, url, request_model, format)
     }; // cfg dropped here, before any .await
 
-    let response = client
+    let payload = match api_format.as_str() {
+        "anthropic_messages" => anthropic_payload(&request_model, messages),
+        "gemini_messages" => gemini_payload(messages),
+        _ => json!({
+            "model": request_model,
+            "messages": messages,
+        }),
+    };
+
+    let mut request = client
         .post(api_url)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
-        .timeout(Duration::from_secs_f64(timeout_secs))
-        .json(&json!({
-            "model": request_model,
-            "messages": messages,
-        }))
-        .send()
-        .await;
+        .timeout(Duration::from_secs_f64(timeout_secs));
+
+    if api_format == "anthropic_messages" {
+        request = request
+            .header("Accept", "application/json")
+            .header("x-api-key", api_key.clone())
+            .header("anthropic-version", "2023-06-01");
+    } else if api_format == "gemini_messages" {
+        request = request.header("x-api-key", api_key.clone());
+    }
+
+    let response = request.json(&payload).send().await;
 
     let response = match response {
         Ok(response) => response,
@@ -549,9 +593,13 @@ async fn query_model(
         }
     };
 
-    Some(ModelReply {
-        content: extract_content(&data),
-    })
+    let content = match api_format.as_str() {
+        "anthropic_messages" => extract_anthropic_content(&data),
+        "gemini_messages" => extract_gemini_content(&data),
+        _ => extract_content(&data),
+    };
+
+    Some(ModelReply { content })
 }
 
 async fn query_models_parallel(
@@ -690,10 +738,43 @@ async fn stage3_synthesize_final(
         content: chairman_prompt,
     });
 
-    let chairman_model = {
+    let (chairman_model, chairman_known, chairman_has_key) = {
         let cfg = config.read().unwrap();
-        cfg.chairman_model.clone()
+        let name = cfg.chairman_model.clone();
+        let entry = cfg.model_registry.get(name.trim());
+        let known = entry.is_some();
+        let has_key = entry
+            .map(|entry| !entry.api_key.trim().is_empty())
+            .unwrap_or(false);
+        (name, known, has_key)
     }; // cfg dropped
+
+    // Surface configuration problems explicitly instead of a generic failure.
+    if chairman_model.trim().is_empty() {
+        return Stage3Response {
+            model: "error".to_string(),
+            response: "Error: No Chairman model is configured. Please pick a Chairman in Settings."
+                .to_string(),
+        };
+    }
+
+    if !chairman_known {
+        return Stage3Response {
+            model: chairman_model.clone(),
+            response: format!(
+                "Error: Chairman model \"{chairman_model}\" was not found in your configured models. Make sure the model exists in Settings and the name matches exactly."
+            ),
+        };
+    }
+
+    if !chairman_has_key {
+        return Stage3Response {
+            model: chairman_model.clone(),
+            response: format!(
+                "Error: Chairman model \"{chairman_model}\" has no API Key configured. Please add its API Key in Settings."
+            ),
+        };
+    }
 
     let response = query_model(client, &config, &chairman_model, &messages, 120.0).await;
 
@@ -701,7 +782,9 @@ async fn stage3_synthesize_final(
         model: chairman_model,
         response: response
             .map(|reply| reply.content)
-            .unwrap_or_else(|| "Error: Unable to generate final synthesis.".to_string()),
+            .unwrap_or_else(|| {
+                "Error: Chairman request failed (network error, timeout, or invalid response). Check the Base URL and request format in Settings.".to_string()
+            }),
     }
 }
 
@@ -1245,24 +1328,7 @@ async fn delete_conversation(
 
 #[tauri::command]
 fn get_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
-    let mut settings = load_settings_from_file(&app_handle);
-
-    // Hydrate defaults: if models is empty, populate with DEFAULT_COUNCIL_MODELS (all active)
-    if settings.models.is_empty() {
-        settings.models = DEFAULT_COUNCIL_MODELS
-            .iter()
-            .map(|name| ModelEntry {
-                name: (*name).to_string(),
-                active: true,
-            })
-            .collect();
-    }
-
-    // Hydrate defaults: if chairman_model is empty, use DEFAULT_CHAIRMAN_MODEL
-    if settings.chairman_model.is_empty() {
-        settings.chairman_model = DEFAULT_CHAIRMAN_MODEL.to_string();
-    }
-
+    let settings = load_settings_from_file(&app_handle);
     Ok(settings)
 }
 

@@ -5,11 +5,10 @@ import { check } from '@tauri-apps/plugin-updater';
 import { getVersion } from '@tauri-apps/api/app';
 import './Settings.css';
 
-const SETTINGS_FIELDS = [
-  { group: 'DeepSeek', keyPrefix: 'deepseek' },
-  { group: 'MiniMax', keyPrefix: 'minimax' },
-  { group: 'Kimi', keyPrefix: 'kimi' },
-  { group: 'GLM', keyPrefix: 'glm' },
+const API_FORMAT_OPTIONS = [
+  { value: 'openai', label: 'OpenAI Compatible' },
+  { value: 'anthropic_messages', label: 'Anthropic Messages' },
+  { value: 'gemini_messages', label: 'Gemini generateContent' },
 ];
 
 export default function Settings({ isOpen, onClose }) {
@@ -52,10 +51,14 @@ export default function Settings({ isOpen, onClose }) {
   }
 
   // Model management handlers
-  function handleModelNameChange(index, newName) {
+  function handleModelFieldChange(index, field, value) {
     setSettings(prev => {
       const models = [...prev.models];
-      models[index] = { ...models[index], name: newName };
+      const previousName = models[index].name;
+      models[index] = { ...models[index], [field]: value };
+      if (field === 'name' && prev.chairman_model === previousName) {
+        return { ...prev, models, chairman_model: value };
+      }
       return { ...prev, models };
     });
     setSuccess(false);
@@ -65,16 +68,7 @@ export default function Settings({ isOpen, onClose }) {
     setSettings(prev => {
       const models = [...prev.models];
       models[index] = { ...models[index], active: !models[index].active };
-      const toggledModel = models[index];
-      // If toggling off and this model is the chairman, reset chairman
-      if (!toggledModel.active && prev.chairman_model === toggledModel.name) {
-        const firstActive = models.find(m => m.active);
-        return {
-          ...prev,
-          models,
-          chairman_model: firstActive ? firstActive.name : '',
-        };
-      }
+      // A dormant model can still serve as chairman, so we no longer reset it here.
       return { ...prev, models };
     });
     setSuccess(false);
@@ -83,7 +77,7 @@ export default function Settings({ isOpen, onClose }) {
   function handleAddModel() {
     setSettings(prev => ({
       ...prev,
-      models: [...prev.models, { name: '', active: true }],
+      models: [...prev.models, { name: '', api_key: '', base_url: '', api_format: 'openai', active: true }],
     }));
     setSuccess(false);
   }
@@ -151,30 +145,6 @@ export default function Settings({ isOpen, onClose }) {
         </div>
 
         <div className="settings-body">
-          {SETTINGS_FIELDS.map(({ group, keyPrefix }) => (
-            <div key={keyPrefix} className="settings-group">
-              <h3 className="settings-group-title">{group}</h3>
-              <div className="settings-field">
-                <label>API Key</label>
-                <input
-                  type="password"
-                  value={settings[keyPrefix + '_api_key']}
-                  onChange={e => handleChange(keyPrefix + '_api_key', e.target.value)}
-                  placeholder="输入 API Key"
-                />
-              </div>
-              <div className="settings-field">
-                <label>Base URL</label>
-                <input
-                  type="text"
-                  value={settings[keyPrefix + '_base_url']}
-                  onChange={e => handleChange(keyPrefix + '_base_url', e.target.value)}
-                  placeholder="输入 Base URL"
-                />
-              </div>
-            </div>
-          ))}
-
           <div className="settings-group">
             <h3 className="settings-group-title">Council Models</h3>
             <div className="settings-field">
@@ -184,51 +154,94 @@ export default function Settings({ isOpen, onClose }) {
                 value={settings.chairman_model}
                 onChange={e => handleChairmanChange(e.target.value)}
               >
-                {settings.models.filter(m => m.active).length === 0 && (
-                  <option value="" disabled>No active models</option>
+                {settings.models.filter(m => m.name.trim()).length === 0 && (
+                  <option value="" disabled>No models configured</option>
                 )}
+                {/* If the saved chairman no longer matches any model, surface it so the user can fix it. */}
+                {settings.chairman_model.trim() &&
+                  !settings.models.some(m => m.name.trim() === settings.chairman_model.trim()) && (
+                    <option value={settings.chairman_model}>
+                      {settings.chairman_model}（已失效，请重新选择）
+                    </option>
+                  )}
                 {settings.models
-                  .filter(m => m.active)
+                  .filter(m => m.name.trim())
                   .map(m => (
-                    <option key={m.name} value={m.name}>{m.name}</option>
+                    <option key={m.name} value={m.name}>
+                      {m.name}{m.active ? '' : '（休眠）'}
+                    </option>
                   ))}
               </select>
-              <div className="settings-field-hint">主席模型负责综合所有议员回复生成最终答案</div>
+              <div className="settings-field-hint">主席模型负责综合所有模型回复生成最终答案</div>
             </div>
             {settings.models.map((model, index) => (
-              <div key={index} className={`model-row ${!model.active ? 'model-dormant' : ''}`}>
-                <input
-                  type="text"
-                  className="model-name-input"
-                  value={model.name}
-                  onChange={e => handleModelNameChange(index, e.target.value)}
-                  placeholder="provider/model-name"
-                />
-                <label className="toggle-switch">
+              <div key={index} className={`model-card ${!model.active ? 'model-dormant' : ''}`}>
+                <div className="model-card-header">
                   <input
-                    type="checkbox"
-                    checked={model.active}
-                    onChange={() => handleModelActiveToggle(index)}
+                    type="text"
+                    className="model-name-input"
+                    value={model.name}
+                    onChange={e => handleModelFieldChange(index, 'name', e.target.value)}
+                    placeholder="模型名称，例如 deepseek-chat"
                   />
-                  <span className="toggle-slider"></span>
-                </label>
-                <span className="model-status-label">
-                  {model.active ? '在线' : '休眠'}
-                </span>
-                <button
-                  className="model-remove-btn"
-                  onClick={() => handleRemoveModel(index)}
-                  title="删除模型"
-                >
-                  ×
-                </button>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      checked={model.active}
+                      onChange={() => handleModelActiveToggle(index)}
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                  <span className="model-status-label">
+                    {model.active ? '在线' : '休眠'}
+                  </span>
+                  <button
+                    className="model-remove-btn"
+                    onClick={() => handleRemoveModel(index)}
+                    title="删除模型"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="model-card-fields">
+                  <div className="model-field">
+                    <label>请求格式</label>
+                    <select
+                      className="model-format-select"
+                      value={model.api_format || 'openai'}
+                      onChange={e => handleModelFieldChange(index, 'api_format', e.target.value)}
+                    >
+                      {API_FORMAT_OPTIONS.map(option => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="model-field">
+                    <label>API Key</label>
+                    <input
+                      type="password"
+                      value={model.api_key}
+                      onChange={e => handleModelFieldChange(index, 'api_key', e.target.value)}
+                      placeholder="输入该模型的 API Key"
+                    />
+                  </div>
+                  <div className="model-field">
+                    <label>Base URL</label>
+                    <input
+                      type="text"
+                      value={model.base_url}
+                      onChange={e => handleModelFieldChange(index, 'base_url', e.target.value)}
+                      placeholder="例如 https://api.sophnet.com/v1"
+                    />
+                  </div>
+                </div>
               </div>
             ))}
             <button className="model-add-btn" onClick={handleAddModel}>
               + 添加模型
             </button>
             <div className="settings-field-hint">
-              切换「休眠」可临时排除模型参与讨论，不会永久删除
+              每个模型需填写名称、API Key、Base URL 和请求格式。SophNet Anthropic 可填 https://api.sophnet.com/v1，Gemini 可填完整 generateContent 地址
             </div>
           </div>
 

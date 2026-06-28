@@ -14,7 +14,7 @@ async def query_model(
     Query a single model via its respective API.
 
     Args:
-        model: Model identifier (e.g., "deepseek/DeepSeek-V4-Pro" or "openai/gpt-4o")
+        model: Model identifier sent to the provider API (e.g., "DeepSeek-V4-Pro" or "gpt-4o")
         messages: List of message dicts with 'role' and 'content'
         timeout: Request timeout in seconds
 
@@ -76,7 +76,7 @@ async def query_models_parallel(
     Query multiple models in parallel.
 
     Args:
-        models: List of OpenRouter model identifiers
+        models: List of model identifiers to send to each provider API
         messages: List of message dicts to send to each model
 
     Returns:

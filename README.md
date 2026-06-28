@@ -1,8 +1,6 @@
 # LLM Council
 
-![llmcouncil](header.jpg)
-
-The idea of this repo is that instead of asking a question to your favorite LLM provider (e.g. OpenAI GPT 5.1, Google Gemini 3.0 Pro, Anthropic Claude Sonnet 4.5, xAI Grok 4, eg.c), you can group them into your "LLM Council". This repo is a simple, local web app that essentially looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, it then asks them to review and rank each other's work, and finally a Chairman LLM produces the final response.
+The idea of this repo is that instead of asking a question to your favorite LLM provider, you can group them into your "LLM Council". This repo is a simple, local web app that essentially looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, it then asks them to review and rank each other's work, and finally a Chairman LLM produces the final response.
 
 In a bit more detail, here is what happens when you submit a query:
 
@@ -32,32 +30,37 @@ cd frontend
 npm install
 ```
 
-### 3. Configure API Keys
+### 3. Configure Models
 
-Create a `.env` file in the project root. The Tauri runtime loads it automatically during development.
+Models are now fully customizable from the in-app Settings panel. You no longer need to edit `.env` files or recompile to change the council.
+
+Open the desktop app, click the **Settings** icon, and under **Council Models** click **+ 添加模型** to add each model you want in your council. For every model, fill in:
+
+- **Model Name** — the model identifier sent to the API (e.g. `deepseek-chat`, `gpt-4o`, `claude-3-5-sonnet-20241022`)
+- **API Key** — the secret key for that provider
+- **Base URL** — the provider's API base URL (e.g. `https://api.deepseek.com`, `https://api.openai.com/v1`, `https://api.sophnet.com/v1`)
+- **Request Format** — choose `OpenAI Compatible`, `Anthropic Messages`, or `Gemini generateContent`
+
+URL handling depends on the selected request format:
+
+- `OpenAI Compatible` appends `/chat/completions` if needed.
+- `Anthropic Messages` appends `/messages` if needed. For SophNet, use `https://api.sophnet.com/v1`.
+- `Gemini generateContent` uses a full `:generateContent` URL as-is. For SophNet Gemini, use `https://api.sophnet.com/v1beta/models/gemini-3.1-pro-preview:generateContent`.
+
+Then pick one model as the **Chairman Model** from the dropdown — it synthesizes the final answer.
+
+Toggle a model to **休眠** (dormant) to temporarily exclude it from council discussions without deleting it.
+
+#### Optional: Environment Variable Overrides
+
+For headless or pre-configured setups, you can still seed the council via environment variables in a `.env` file at the project root:
 
 ```bash
-OPENROUTER_API_KEY=sk-or-v1-...
-DEEPSEEK_API_KEY=...
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-MINIMAX_API_KEY=...
-MINIMAX_BASE_URL=https://api.minimax.chat/v1
-KIMI_API_KEY=...
-KIMI_BASE_URL=https://api.moonshot.cn/v1
-GLM_API_KEY=...
-GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+COUNCIL_MODELS=deepseek-chat,gpt-4o,claude-3-5-sonnet-20241022
+CHAIRMAN_MODEL=deepseek-chat
 ```
 
-Provider-prefixed models such as `deepseek/...` or `glm/...` will use their dedicated API if both key and base URL are configured. Otherwise the runtime falls back to OpenRouter.
-
-### 4. Configure Models (Optional)
-
-By default the desktop runtime uses the same council as [backend/config.py](backend/config.py). You can override it without recompiling by adding these optional environment variables:
-
-```bash
-COUNCIL_MODELS=deepseek/DeepSeek-V4-Pro,minimax/MiniMax-M3,kimi/Kimi-K2.6,glm/GLM-5.1
-CHAIRMAN_MODEL=deepseek/DeepSeek-V4-Pro
-```
+Note: when using env vars, each model's API Key and Base URL must still be configured in the Settings panel, because models are now self-contained (each carries its own credentials).
 
 ## Running the Desktop App
 

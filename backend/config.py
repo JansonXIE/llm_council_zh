@@ -8,16 +8,16 @@ load_dotenv()
 # OpenRouter API key
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Council members - list of OpenRouter model identifiers
+# Council members - legacy reference defaults
 COUNCIL_MODELS = [
-    "deepseek/DeepSeek-V4-Pro",
-    "minimax/MiniMax-M3",
-    "kimi/Kimi-K2.6",
-    "glm/GLM-5.1",
+    "DeepSeek-V4-Pro",
+    "MiniMax-M3",
+    "Kimi-K2.6",
+    "GLM-5.1",
 ]
 
 # Chairman model - synthesizes final response
-CHAIRMAN_MODEL = "deepseek/DeepSeek-V4-Pro"
+CHAIRMAN_MODEL = "DeepSeek-V4-Pro"
 
 PROVIDERS = {
     "deepseek": {

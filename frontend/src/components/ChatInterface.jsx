@@ -54,7 +54,7 @@ export default function ChatInterface({
         {conversation.messages.length === 0 ? (
           <div className="empty-state">
             <h2>开始新对话</h2>
-            <p>在下方输入问题向议会发起咨询</p>
+            <p>在下方输入问题向模型发起咨询</p>
           </div>
         ) : (
           conversation.messages.map((msg, index) => (
@@ -76,7 +76,7 @@ export default function ChatInterface({
                   {msg.loading?.stage1 && (
                     <div className="stage-loading">
                       <div className="spinner"></div>
-                      <span>阶段 1：正在收集各议员的回答...</span>
+                      <span>阶段 1：正在收集各模型的回答...</span>
                     </div>
                   )}
                   {msg.stage1 && <Stage1 responses={msg.stage1} />}
@@ -85,7 +85,7 @@ export default function ChatInterface({
                   {msg.loading?.stage2 && (
                     <div className="stage-loading">
                       <div className="spinner"></div>
-                      <span>阶段 2：议员交叉评分与评价...</span>
+                      <span>阶段 2：模型交叉评分与评价...</span>
                     </div>
                   )}
                   {msg.stage2 && (
@@ -113,7 +113,7 @@ export default function ChatInterface({
         {isLoading && (
           <div className="loading-indicator">
             <div className="spinner"></div>
-            <span>正在咨询议会...</span>
+            <span>正在咨询模型...</span>
           </div>
         )}
 
