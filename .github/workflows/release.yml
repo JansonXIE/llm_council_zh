@@ -9,68 +9,22 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        run: npm ci
-        working-directory: frontend
-
-      - name: Update version to match tag
-        shell: bash
-        working-directory: frontend
-        run: |
-          # Remove 'v' prefix from tag
-          VERSION=${GITHUB_REF_NAME#v}
-          echo "Setting version to $VERSION"
-          
-          # Update package.json
-          npm version $VERSION --no-git-tag-version
-          
-          # Update tauri.conf.json
-          node -e "const fs=require('fs'); let data=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json')); data.version='$VERSION'; fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(data, null, 2));"
-          
-          # Update Cargo.toml
-          node -e "const fs=require('fs'); let data=fs.readFileSync('src-tauri/Cargo.toml', 'utf8'); data=data.replace(/version = \".*\"/, 'version = \"' + '$VERSION' + '\"'); fs.writeFileSync('src-tauri/Cargo.toml', data);"
-
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'LLM Council ${{ github.ref_name }}'
-          releaseBody: |
-            ## LLM Council ${{ github.ref_name }}
-
-            See the assets to download and install this version.
-
-            - **Windows**: Download the `.exe` installer (NSIS setup wizard)
-            - **Linux (Debian/Ubuntu)**: Download the `.deb` package
-            - **Linux (portable)**: Download the `.AppImage` — no install needed
-          releaseDraft: false
-          prerelease: false
-          tauriPath: frontend/src-tauri
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
-
-  build-linux:
-    runs-on: ubuntu-latest
+  # ---------------------------------------------------------------------------
+  # Build each platform separately and upload the raw bundles as workflow
+  # artifacts. These jobs DO NOT touch the GitHub Release, so they can never
+  # overwrite each other's assets (the previous race condition that caused the
+  # updater's latest.json + installers to be lost).
+  # ---------------------------------------------------------------------------
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: windows
+          - platform: ubuntu-latest
+            target: linux
+    runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -86,6 +40,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install Linux dependencies
+        if: matrix.target == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -107,29 +62,149 @@ jobs:
         shell: bash
         working-directory: frontend
         run: |
-          # Remove 'v' prefix from tag
+          # Remove 'v' prefix from tag (e.g. v0.2.7 -> 0.2.7)
           VERSION=${GITHUB_REF_NAME#v}
           echo "Setting version to $VERSION"
-          
+
           # Update package.json
-          npm version $VERSION --no-git-tag-version
-          
+          npm version "$VERSION" --no-git-tag-version
+
           # Update tauri.conf.json
           node -e "const fs=require('fs'); let data=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json')); data.version='$VERSION'; fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(data, null, 2));"
-          
+
           # Update Cargo.toml
           node -e "const fs=require('fs'); let data=fs.readFileSync('src-tauri/Cargo.toml', 'utf8'); data=data.replace(/version = \".*\"/, 'version = \"' + '$VERSION' + '\"'); fs.writeFileSync('src-tauri/Cargo.toml', data);"
 
-      - name: Build Tauri app
+      - name: Build Tauri app (no release upload)
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'LLM Council ${{ github.ref_name }}'
-          releaseBody: |
+          # Do NOT pass tagName/GITHUB_TOKEN here so the action only builds and
+          # signs the bundles instead of creating/uploading the release.
+          tauriPath: frontend/src-tauri
+
+      - name: Collect bundle artifacts (Windows)
+        if: matrix.target == 'windows'
+        shell: bash
+        run: |
+          mkdir -p upload
+          # NSIS installer + its updater signature
+          cp frontend/src-tauri/target/release/bundle/nsis/*-setup.exe upload/ 2>/dev/null || true
+          cp frontend/src-tauri/target/release/bundle/nsis/*-setup.exe.sig upload/ 2>/dev/null || true
+          ls -la upload/
+
+      - name: Collect bundle artifacts (Linux)
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          mkdir -p upload
+          cp frontend/src-tauri/target/release/bundle/appimage/*.AppImage upload/ 2>/dev/null || true
+          cp frontend/src-tauri/target/release/bundle/appimage/*.AppImage.sig upload/ 2>/dev/null || true
+          cp frontend/src-tauri/target/release/bundle/deb/*.deb upload/ 2>/dev/null || true
+          ls -la upload/
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          path: upload/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # After BOTH platforms finish, gather all artifacts, build a single merged
+  # latest.json containing every platform, and create one GitHub Release.
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all bundle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts into a single folder
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -exec cp {} release-assets/ \;
+          echo "Release assets:"
+          ls -la release-assets/
+
+      - name: Generate merged latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          REPO="${GITHUB_REPOSITORY}"
+          TAG="${GITHUB_REF_NAME}"
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          cd release-assets
+
+          read_sig() {
+            # $1 = signature file name; outputs its content (single line)
+            if [ -f "$1" ]; then
+              cat "$1"
+            else
+              echo ""
+            fi
+          }
+
+          # Resolve installer / signature file names per platform.
+          WIN_EXE="$(ls *-setup.exe 2>/dev/null | head -n1 || true)"
+          WIN_SIG="$(ls *-setup.exe.sig 2>/dev/null | head -n1 || true)"
+          LINUX_APPIMAGE="$(ls *.AppImage 2>/dev/null | head -n1 || true)"
+          LINUX_SIG="$(ls *.AppImage.sig 2>/dev/null | head -n1 || true)"
+
+          echo "Windows installer: ${WIN_EXE:-<missing>}"
+          echo "Linux AppImage:    ${LINUX_APPIMAGE:-<missing>}"
+
+          PLATFORMS="{}"
+          add_platform() {
+            # $1 = platform key, $2 = signature, $3 = file name
+            local key="$1" sig="$2" file="$3"
+            if [ -z "$file" ] || [ -z "$sig" ]; then
+              echo "Skipping platform $key (missing file or signature)"
+              return
+            fi
+            PLATFORMS="$(node -e "
+              const p = JSON.parse(process.argv[1]);
+              p[process.argv[2]] = { signature: process.argv[3], url: process.argv[4] };
+              console.log(JSON.stringify(p));
+            " "$PLATFORMS" "$key" "$sig" "${BASE}/${file}")"
+          }
+
+          add_platform "windows-x86_64" "$(read_sig "$WIN_SIG")" "$WIN_EXE"
+          add_platform "linux-x86_64" "$(read_sig "$LINUX_SIG")" "$LINUX_APPIMAGE"
+
+          node -e "
+            const fs = require('fs');
+            const out = {
+              version: process.argv[1],
+              notes: 'See the assets to download and install this version.',
+              pub_date: process.argv[2],
+              platforms: JSON.parse(process.argv[3]),
+            };
+            fs.writeFileSync('latest.json', JSON.stringify(out, null, 2));
+          " "$VERSION" "$PUB_DATE" "$PLATFORMS"
+
+          echo "Generated latest.json:"
+          cat latest.json
+
+      - name: Create GitHub Release with all assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'LLM Council ${{ github.ref_name }}'
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          body: |
             ## LLM Council ${{ github.ref_name }}
 
             See the assets to download and install this version.
@@ -137,8 +212,7 @@ jobs:
             - **Windows**: Download the `.exe` installer (NSIS setup wizard)
             - **Linux (Debian/Ubuntu)**: Download the `.deb` package
             - **Linux (portable)**: Download the `.AppImage` — no install needed
-          releaseDraft: false
-          prerelease: false
-          tauriPath: frontend/src-tauri
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
+          files: |
+            release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
