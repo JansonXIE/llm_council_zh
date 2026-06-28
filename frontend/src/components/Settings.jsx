@@ -101,6 +101,11 @@ export default function Settings({ isOpen, onClose }) {
     setSuccess(false);
   }
 
+  function handleImageModelChange(value) {
+    setSettings(prev => ({ ...prev, image_model: value }));
+    setSuccess(false);
+  }
+
   async function handlePickDataDir() {
     const selected = await open({
       directory: true,
@@ -173,6 +178,31 @@ export default function Settings({ isOpen, onClose }) {
                   ))}
               </select>
               <div className="settings-field-hint">主席模型负责综合所有模型回复生成最终答案</div>
+            </div>
+            <div className="settings-field">
+              <label>图片分析模型</label>
+              <select
+                className="settings-select"
+                value={settings.image_model || ''}
+                onChange={e => handleImageModelChange(e.target.value)}
+              >
+                <option value="">未设置（不支持图片分析）</option>
+                {/* If the saved image model no longer matches any model, surface it so the user can fix it. */}
+                {settings.image_model && settings.image_model.trim() &&
+                  !settings.models.some(m => m.name.trim() === settings.image_model.trim()) && (
+                    <option value={settings.image_model}>
+                      {settings.image_model}（已失效，请重新选择）
+                    </option>
+                  )}
+                {settings.models
+                  .filter(m => m.name.trim())
+                  .map(m => (
+                    <option key={m.name} value={m.name}>
+                      {m.name}{m.active ? '' : '（休眠）'}
+                    </option>
+                  ))}
+              </select>
+              <div className="settings-field-hint">图片分析模型用于直接分析图片并回答，需选择支持视觉（多模态）的模型</div>
             </div>
             {settings.models.map((model, index) => (
               <div key={index} className={`model-card ${!model.active ? 'model-dormant' : ''}`}>

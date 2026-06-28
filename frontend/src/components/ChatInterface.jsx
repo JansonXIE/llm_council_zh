@@ -13,7 +13,9 @@ export default function ChatInterface({
   onToggleCouncil,
 }) {
   const [input, setInput] = useState('');
+  const [images, setImages] = useState([]);
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -23,11 +25,61 @@ export default function ChatInterface({
     scrollToBottom();
   }, [conversation]);
 
+  const readFileAsDataUrl = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  const addImageFiles = async (files) => {
+    const imageFiles = Array.from(files || []).filter((f) =>
+      f.type.startsWith('image/')
+    );
+    if (imageFiles.length === 0) return;
+    try {
+      const dataUrls = await Promise.all(imageFiles.map(readFileAsDataUrl));
+      setImages((prev) => [...prev, ...dataUrls]);
+    } catch (err) {
+      console.error('读取图片失败:', err);
+    }
+  };
+
+  const handleFilesSelected = async (e) => {
+    await addImageFiles(e.target.files);
+    // Reset the input so the same file can be selected again later.
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handlePaste = async (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const pastedFiles = [];
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) pastedFiles.push(file);
+      }
+    }
+    if (pastedFiles.length > 0) {
+      // Prevent the (usually empty) image text from being inserted into the box.
+      e.preventDefault();
+      await addImageFiles(pastedFiles);
+    }
+  };
+
+  const handleRemoveImage = (index) => {
+    setImages((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (input.trim() && !isLoading) {
-      onSendMessage(input);
+    const hasContent = input.trim() || images.length > 0;
+    if (hasContent && !isLoading) {
+      onSendMessage(input, images);
       setInput('');
+      setImages([]);
     }
   };
 
@@ -65,9 +117,23 @@ export default function ChatInterface({
                 <div className="user-message">
                   <div className="message-label">您</div>
                   <div className="message-content">
-                    <div className="markdown-content">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
-                    </div>
+                    {msg.images && msg.images.length > 0 && (
+                      <div className="message-images">
+                        {msg.images.map((img, i) => (
+                          <img
+                            key={i}
+                            src={img}
+                            alt={`附图 ${i + 1}`}
+                            className="message-image"
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {msg.content && (
+                      <div className="markdown-content">
+                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -146,19 +212,54 @@ export default function ChatInterface({
               : '已关闭，直接由主席模型（Chairman）回答'}
           </span>
         </div>
+        {images.length > 0 && (
+          <div className="image-preview-bar">
+            {images.map((img, i) => (
+              <div key={i} className="image-preview-item">
+                <img src={img} alt={`预览 ${i + 1}`} className="image-preview-thumb" />
+                <button
+                  type="button"
+                  className="image-preview-remove"
+                  onClick={() => handleRemoveImage(i)}
+                  aria-label="移除图片"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           className="message-input"
-          placeholder="输入您的问题... (Shift+Enter 换行, Enter 发送)"
+          placeholder="输入您的问题... (Shift+Enter 换行, Enter 发送, Ctrl+V 粘贴图片)"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           disabled={isLoading}
           rows={3}
         />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: 'none' }}
+          onChange={handleFilesSelected}
+        />
+        <button
+          type="button"
+          className="attach-button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isLoading}
+          title="添加图片"
+        >
+          📎 图片
+        </button>
         <button
           type="submit"
           className="send-button"
-          disabled={!input.trim() || isLoading}
+          disabled={(!input.trim() && images.length === 0) || isLoading}
         >
           发送
         </button>

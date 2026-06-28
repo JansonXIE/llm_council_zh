@@ -32,7 +32,7 @@ export const api = {
     return invoke('send_message', { conversationId, content });
   },
 
-  async sendMessageStream(conversationId, content, onEvent) {
+  async sendMessageStream(conversationId, content, images, onEvent) {
     let finished = false;
     let unlisten = null;
     let resolveDone;
@@ -70,7 +70,7 @@ export const api = {
         }
       });
 
-      await invoke('start_council_stream', { conversationId, content });
+      await invoke('start_council_stream', { conversationId, content, images: images || [] });
       await done;
     } catch (error) {
       cleanup();

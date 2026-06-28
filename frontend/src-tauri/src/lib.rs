@@ -43,6 +43,8 @@ struct AppSettings {
     models: Vec<ModelEntry>,
     #[serde(default)]
     chairman_model: String,
+    #[serde(default)]
+    image_model: String,
     #[serde(default = "default_true")]
     auto_update: bool,
     #[serde(default = "default_true")]
@@ -64,6 +66,7 @@ struct CouncilConfig {
     model_registry: HashMap<String, ModelEntry>,
     data_dir: Option<String>,
     council_enabled: bool,
+    image_model: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -79,6 +82,8 @@ struct ConversationMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    images: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stage1: Option<Vec<Stage1Response>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +161,20 @@ struct StreamEvent {
 struct ChatMessage {
     role: String,
     content: String,
+    /// Base64 data URLs (e.g. "data:image/png;base64,....") attached to this
+    /// message. Empty for text-only messages. Used for multimodal requests.
+    #[serde(skip)]
+    images: Vec<String>,
+}
+
+impl ChatMessage {
+    fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            images: Vec::new(),
+        }
+    }
 }
 
 struct ModelReply {
@@ -291,12 +310,31 @@ fn build_council_config(settings: &AppSettings) -> CouncilConfig {
         None
     };
 
+    let image_model = if !settings.image_model.trim().is_empty() {
+        settings.image_model.trim().to_string()
+    } else {
+        env_var("IMAGE_MODEL").unwrap_or_default()
+    };
+
+    // The dedicated image-analysis model should not take part in the council's
+    // multi-stage deliberation (stage 1 responses / stage 2 peer review), so we
+    // drop it from the council roster here.
+    let council_models = if image_model.trim().is_empty() {
+        council_models
+    } else {
+        council_models
+            .into_iter()
+            .filter(|name| name.trim() != image_model.trim())
+            .collect()
+    };
+
     CouncilConfig {
         chairman_model,
         council_models,
         model_registry,
         data_dir,
         council_enabled: settings.council_enabled,
+        image_model,
     }
 }
 
@@ -353,6 +391,7 @@ fn assistant_message_from_response(response: &SendMessageResponse) -> Conversati
     ConversationMessage {
         role: "assistant".to_string(),
         content: None,
+        images: Vec::new(),
         stage1: Some(response.stage1.clone()),
         stage2: Some(response.stage2.clone()),
         stage3: Some(response.stage3.clone()),
@@ -360,10 +399,11 @@ fn assistant_message_from_response(response: &SendMessageResponse) -> Conversati
     }
 }
 
-fn user_message(content: String) -> ConversationMessage {
+fn user_message(content: String, images: Vec<String>) -> ConversationMessage {
     ConversationMessage {
         role: "user".to_string(),
         content: Some(content),
+        images,
         stage1: None,
         stage2: None,
         stage3: None,
@@ -439,12 +479,91 @@ fn split_system_messages(messages: &[ChatMessage]) -> (String, Vec<ChatMessage>)
     (system, conversation)
 }
 
+/// Split a base64 data URL ("data:image/png;base64,XXXX") into its mime type and
+/// raw base64 payload. Falls back to "image/png" when the mime cannot be parsed.
+fn parse_data_url(data_url: &str) -> (String, String) {
+    if let Some(rest) = data_url.strip_prefix("data:") {
+        if let Some((meta, payload)) = rest.split_once(',') {
+            let mime = meta.split(';').next().unwrap_or("image/png").to_string();
+            return (mime, payload.to_string());
+        }
+    }
+    // Treat the whole string as raw base64 with a default mime.
+    ("image/png".to_string(), data_url.to_string())
+}
+
+/// Build the OpenAI-compatible `content` field for a single message. When the
+/// message carries images we emit the multimodal array form; otherwise a plain
+/// string is used to stay compatible with text-only providers.
+fn openai_message_content(message: &ChatMessage) -> Value {
+    if message.images.is_empty() {
+        return json!(message.content);
+    }
+
+    let mut parts = Vec::new();
+    if !message.content.is_empty() {
+        parts.push(json!({ "type": "text", "text": message.content }));
+    }
+    for image in &message.images {
+        parts.push(json!({
+            "type": "image_url",
+            "image_url": { "url": image },
+        }));
+    }
+    json!(parts)
+}
+
+fn openai_messages_payload(messages: &[ChatMessage]) -> Value {
+    let array = messages
+        .iter()
+        .map(|message| {
+            json!({
+                "role": message.role,
+                "content": openai_message_content(message),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!(array)
+}
+
 fn anthropic_payload(model: &str, messages: &[ChatMessage]) -> Value {
     let (system, conversation) = split_system_messages(messages);
+    let messages_json = conversation
+        .iter()
+        .map(|message| {
+            if message.images.is_empty() {
+                json!({
+                    "role": message.role,
+                    "content": message.content,
+                })
+            } else {
+                let mut parts = Vec::new();
+                for image in &message.images {
+                    let (mime, data) = parse_data_url(image);
+                    parts.push(json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime,
+                            "data": data,
+                        },
+                    }));
+                }
+                if !message.content.is_empty() {
+                    parts.push(json!({ "type": "text", "text": message.content }));
+                }
+                json!({
+                    "role": message.role,
+                    "content": parts,
+                })
+            }
+        })
+        .collect::<Vec<_>>();
+
     let mut payload = json!({
         "model": model,
         "max_tokens": 4096,
-        "messages": conversation,
+        "messages": messages_json,
     });
     if !system.is_empty() {
         payload["system"] = json!(system);
@@ -457,9 +576,22 @@ fn gemini_payload(messages: &[ChatMessage]) -> Value {
     let contents = conversation
         .iter()
         .map(|message| {
+            let mut parts = Vec::new();
+            if !message.content.is_empty() {
+                parts.push(json!({ "text": message.content }));
+            }
+            for image in &message.images {
+                let (mime, data) = parse_data_url(image);
+                parts.push(json!({
+                    "inline_data": {
+                        "mime_type": mime,
+                        "data": data,
+                    },
+                }));
+            }
             json!({
                 "role": if message.role == "assistant" { "model" } else { "user" },
-                "parts": [{ "text": message.content }],
+                "parts": parts,
             })
         })
         .collect::<Vec<_>>();
@@ -488,16 +620,14 @@ fn extract_conversation_history(conversation: &Conversation, max_turns: usize) -
     for msg in conversation.messages.iter().rev() {
         if msg.role == "assistant" {
             if let Some(stage3) = &msg.stage3 {
-                history.push(ChatMessage {
-                    role: "assistant".to_string(),
-                    content: stage3.response.clone(),
-                });
+                history.push(ChatMessage::text("assistant", stage3.response.clone()));
             }
         } else if msg.role == "user" {
             if let Some(content) = &msg.content {
                 history.push(ChatMessage {
                     role: "user".to_string(),
                     content: content.clone(),
+                    images: msg.images.clone(),
                 });
                 turns += 1;
                 if turns >= max_turns {
@@ -553,7 +683,7 @@ async fn query_model(
         "gemini_messages" => gemini_payload(messages),
         _ => json!({
             "model": request_model,
-            "messages": messages,
+            "messages": openai_messages_payload(messages),
         }),
     };
 
@@ -639,10 +769,7 @@ async fn stage1_collect_responses(
     user_query: &str,
 ) -> Vec<Stage1Response> {
     let mut messages = history.to_vec();
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: user_query.to_string(),
-    });
+    messages.push(ChatMessage::text("user", user_query.to_string()));
 
     let models = {
         let cfg = config.read().unwrap();
@@ -690,10 +817,7 @@ async fn stage2_collect_rankings(
     );
 
     let mut messages = history.to_vec();
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: ranking_prompt,
-    });
+    messages.push(ChatMessage::text("user", ranking_prompt));
 
     let models = config.read().unwrap().council_models.clone();
 
@@ -737,10 +861,7 @@ async fn stage3_synthesize_final(
     );
 
     let mut messages = history.to_vec();
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: chairman_prompt,
-    });
+    messages.push(ChatMessage::text("user", chairman_prompt));
 
     let (chairman_model, chairman_known, chairman_has_key) = {
         let cfg = config.read().unwrap();
@@ -792,6 +913,76 @@ async fn stage3_synthesize_final(
     }
 }
 
+/// Analyze attached images and answer the question directly using the
+/// dedicated image model configured in Settings. Bypasses the council entirely
+/// and returns a Stage3Response so the answer renders in the Final Response slot.
+async fn image_analysis_response(
+    client: &Client,
+    config: Arc<RwLock<CouncilConfig>>,
+    history: &[ChatMessage],
+    user_query: &str,
+    images: &[String],
+) -> Stage3Response {
+    let (image_model, model_known, model_has_key) = {
+        let cfg = config.read().unwrap();
+        let name = cfg.image_model.clone();
+        let entry = cfg.model_registry.get(name.trim());
+        let known = entry.is_some();
+        let has_key = entry
+            .map(|entry| !entry.api_key.trim().is_empty())
+            .unwrap_or(false);
+        (name, known, has_key)
+    }; // cfg dropped
+
+    if image_model.trim().is_empty() {
+        return Stage3Response {
+            model: "error".to_string(),
+            response: "错误：尚未配置图片分析模型，请在「设置」中选择一个用于分析图片的模型。"
+                .to_string(),
+        };
+    }
+
+    if !model_known {
+        return Stage3Response {
+            model: image_model.clone(),
+            response: format!(
+                "错误：图片分析模型「{image_model}」未在已配置的模型列表中找到，请在「设置」中确认模型名称完全一致。"
+            ),
+        };
+    }
+
+    if !model_has_key {
+        return Stage3Response {
+            model: image_model.clone(),
+            response: format!(
+                "错误：图片分析模型「{image_model}」未配置 API Key，请在「设置」中补充。"
+            ),
+        };
+    }
+
+    let query_text = if user_query.trim().is_empty() {
+        "请用中文详细描述并分析这张图片的内容。".to_string()
+    } else {
+        format!("请用中文回答。\n\n{user_query}")
+    };
+
+    let mut messages = history.to_vec();
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: query_text,
+        images: images.to_vec(),
+    });
+
+    let response = query_model(client, &config, &image_model, &messages, 180.0).await;
+
+    Stage3Response {
+        model: image_model,
+        response: response.map(|reply| reply.content).unwrap_or_else(|| {
+            "错误：图片分析请求失败（网络错误、超时或返回无效）。请检查该模型的 Base URL、请求格式，并确认其支持图片输入。".to_string()
+        }),
+    }
+}
+
 /// When the council feature is disabled, answer the question directly with the
 /// Chairman model and skip the peer-review (stage 2) and synthesis (stage 3)
 /// orchestration. Returns a Stage3Response so the UI can render the answer in
@@ -840,10 +1031,10 @@ async fn chairman_only_response(
     }
 
     let mut messages = history.to_vec();
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: format!("Please reply in Chinese.\n\n{user_query}"),
-    });
+    messages.push(ChatMessage::text(
+        "user",
+        format!("Please reply in Chinese.\n\n{user_query}"),
+    ));
 
     let response = query_model(client, &config, &chairman_model, &messages, 120.0).await;
 
@@ -932,10 +1123,7 @@ async fn generate_conversation_title(
         "请为以下问题生成一个非常简短的中文标题（最多5个汉字，如有可能请不要超过8个字）。\n标题必须简洁且具有概括性，不要包含任何标点符号或引号。\n\n问题：{user_query}\n\n标题："
     );
 
-    let messages = vec![ChatMessage {
-        role: "user".to_string(),
-        content: title_prompt,
-    }];
+    let messages = vec![ChatMessage::text("user", title_prompt)];
 
     let chairman_model = {
         let cfg = config.read().unwrap();
@@ -1174,10 +1362,11 @@ async fn append_user_message(
     config: &Arc<RwLock<CouncilConfig>>,
     conversation_id: &str,
     content: String,
+    images: Vec<String>,
 ) -> Result<(), String> {
     let mut conversation =
         load_conversation_from_storage(app_handle, config, conversation_id).await?;
-    conversation.messages.push(user_message(content));
+    conversation.messages.push(user_message(content, images));
     save_conversation(app_handle, config, &conversation).await
 }
 
@@ -1210,6 +1399,7 @@ async fn run_streaming_council(
     config: Arc<RwLock<CouncilConfig>>,
     conversation_id: String,
     content: String,
+    images: Vec<String>,
 ) -> Result<(), String> {
     let conversation =
         load_conversation_from_storage(&app_handle, &config, &conversation_id).await?;
@@ -1217,7 +1407,14 @@ async fn run_streaming_council(
     
     let history = extract_conversation_history(&conversation, 3);
 
-    append_user_message(&app_handle, &config, &conversation_id, content.clone()).await?;
+    append_user_message(
+        &app_handle,
+        &config,
+        &conversation_id,
+        content.clone(),
+        images.clone(),
+    )
+    .await?;
 
     let title_task = if is_first_message {
         let client = client.clone();
@@ -1231,10 +1428,36 @@ async fn run_streaming_council(
     };
 
     let council_enabled = { config.read().unwrap().council_enabled };
+    let has_images = !images.is_empty();
 
-    // When the council feature is disabled, skip stage 2 (peer review) and
-    // stage 3 (synthesis): answer the question directly with the Chairman.
-    let (stage1, stage2, metadata, stage3) = if !council_enabled {
+    // When images are attached, bypass the council entirely and answer directly
+    // with the dedicated image model. Otherwise, when the council feature is
+    // disabled, skip stages 2 & 3 and answer with the Chairman directly.
+    let (stage1, stage2, metadata, stage3) = if has_images {
+        emit_stream_event(
+            &window,
+            StreamEvent::new(&conversation_id, "stage1_complete").with_data(json!([])),
+        )?;
+
+        let empty_metadata = CouncilMetadata::default();
+        emit_stream_event(
+            &window,
+            StreamEvent::new(&conversation_id, "stage2_complete")
+                .with_data(json!([]))
+                .with_metadata(empty_metadata.clone()),
+        )?;
+
+        emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage3_start"))?;
+        let stage3 =
+            image_analysis_response(&client, config.clone(), &history, &content, &images).await;
+        emit_stream_event(
+            &window,
+            StreamEvent::new(&conversation_id, "stage3_complete")
+                .with_data(serialize_value(&stage3)?),
+        )?;
+
+        (Vec::new(), Vec::new(), empty_metadata, stage3)
+    } else if !council_enabled {
         // Skip stages 1 & 2 entirely. Don't emit their "start" events so the UI
         // doesn't flash "collecting responses / peer review" spinners; just send
         // empty completion payloads to keep the frontend state machine in sync.
@@ -1388,6 +1611,7 @@ async fn send_message(
         &state.config,
         &conversation_id,
         content.clone(),
+        Vec::new(),
     )
     .await?;
 
@@ -1409,10 +1633,12 @@ fn start_council_stream(
     state: State<'_, AppState>,
     conversation_id: String,
     content: String,
+    images: Option<Vec<String>>,
 ) -> Result<(), String> {
     let client = state.client.clone();
     let config = state.config.clone();
     let error_window = window.clone();
+    let images = images.unwrap_or_default();
 
     tauri::async_runtime::spawn(async move {
         if let Err(error) = run_streaming_council(
@@ -1422,6 +1648,7 @@ fn start_council_stream(
             config,
             conversation_id.clone(),
             content,
+            images,
         )
         .await
         {
