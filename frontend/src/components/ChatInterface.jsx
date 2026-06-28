@@ -9,6 +9,8 @@ export default function ChatInterface({
   conversation,
   onSendMessage,
   isLoading,
+  councilEnabled = true,
+  onToggleCouncil,
 }) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef(null);
@@ -79,7 +81,7 @@ export default function ChatInterface({
                       <span>阶段 1：正在收集各模型的回答...</span>
                     </div>
                   )}
-                  {msg.stage1 && <Stage1 responses={msg.stage1} />}
+                  {msg.stage1 && msg.stage1.length > 0 && <Stage1 responses={msg.stage1} />}
 
                   {/* Stage 2 */}
                   {msg.loading?.stage2 && (
@@ -88,7 +90,7 @@ export default function ChatInterface({
                       <span>阶段 2：模型交叉评分与评价...</span>
                     </div>
                   )}
-                  {msg.stage2 && (
+                  {msg.stage2 && msg.stage2.length > 0 && (
                     <Stage2
                       rankings={msg.stage2}
                       labelToModel={msg.metadata?.label_to_model}
@@ -100,7 +102,11 @@ export default function ChatInterface({
                   {msg.loading?.stage3 && (
                     <div className="stage-loading">
                       <div className="spinner"></div>
-                      <span>阶段 3：主席模型总结最终答案...</span>
+                      <span>
+                        {msg.stage1 && msg.stage1.length === 0
+                          ? '主席模型正在直接回答...'
+                          : '阶段 3：主席模型总结最终答案...'}
+                      </span>
                     </div>
                   )}
                   {msg.stage3 && <Stage3 finalResponse={msg.stage3} />}
@@ -121,6 +127,25 @@ export default function ChatInterface({
       </div>
 
       <form className="input-form" onSubmit={handleSubmit}>
+        <div className="council-toggle-bar">
+          <label className="council-toggle">
+            <span className="council-toggle-label">大模型委员会</span>
+            <span className="toggle-switch">
+              <input
+                type="checkbox"
+                checked={councilEnabled}
+                disabled={isLoading}
+                onChange={(e) => onToggleCouncil?.(e.target.checked)}
+              />
+              <span className="toggle-slider"></span>
+            </span>
+          </label>
+          <span className="council-toggle-hint">
+            {councilEnabled
+              ? '完整三阶段：回答 → 互评 → 综合'
+              : '已关闭，直接由主席模型（Chairman）回答'}
+          </span>
+        </div>
         <textarea
           className="message-input"
           placeholder="输入您的问题... (Shift+Enter 换行, Enter 发送)"

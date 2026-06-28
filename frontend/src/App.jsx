@@ -11,6 +11,7 @@ function App() {
   const [currentConversationId, setCurrentConversationId] = useState(null);
   const [currentConversation, setCurrentConversation] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [councilEnabled, setCouncilEnabled] = useState(true);
 
   async function loadConversations() {
     try {
@@ -39,6 +40,9 @@ function App() {
     const checkAutoUpdate = async () => {
       try {
         const settings = await api.getSettings();
+        if (!isCancelled) {
+          setCouncilEnabled(settings.council_enabled !== false);
+        }
         if (settings.auto_update !== false) {
           const update = await check();
           if (update) {
@@ -121,9 +125,21 @@ function App() {
     }
   };
 
+  const handleToggleCouncil = async (enabled) => {
+    // Optimistically update the UI, then persist to settings.
+    setCouncilEnabled(enabled);
+    try {
+      const settings = await api.getSettings();
+      await api.saveSettings({ ...settings, council_enabled: enabled });
+    } catch (error) {
+      console.error('Failed to update council toggle:', error);
+      // Revert on failure
+      setCouncilEnabled((prev) => !prev);
+    }
+  };
+
   const handleSendMessage = async (content) => {
     if (!currentConversationId) return;
-
     setIsLoading(true);
     try {
       // Optimistically add user message to UI
@@ -258,6 +274,8 @@ function App() {
         conversation={currentConversation}
         onSendMessage={handleSendMessage}
         isLoading={isLoading}
+        councilEnabled={councilEnabled}
+        onToggleCouncil={handleToggleCouncil}
       />
     </div>
   );

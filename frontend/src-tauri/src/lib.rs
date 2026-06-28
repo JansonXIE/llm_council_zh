@@ -45,6 +45,8 @@ struct AppSettings {
     chairman_model: String,
     #[serde(default = "default_true")]
     auto_update: bool,
+    #[serde(default = "default_true")]
+    council_enabled: bool,
 }
 
 // ── Core types ────────────────────────────────────────────────────────
@@ -61,6 +63,7 @@ struct CouncilConfig {
     council_models: Vec<String>,
     model_registry: HashMap<String, ModelEntry>,
     data_dir: Option<String>,
+    council_enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -293,6 +296,7 @@ fn build_council_config(settings: &AppSettings) -> CouncilConfig {
         council_models,
         model_registry,
         data_dir,
+        council_enabled: settings.council_enabled,
     }
 }
 
@@ -788,6 +792,71 @@ async fn stage3_synthesize_final(
     }
 }
 
+/// When the council feature is disabled, answer the question directly with the
+/// Chairman model and skip the peer-review (stage 2) and synthesis (stage 3)
+/// orchestration. Returns a Stage3Response so the UI can render the answer in
+/// the familiar Final Response slot.
+async fn chairman_only_response(
+    client: &Client,
+    config: Arc<RwLock<CouncilConfig>>,
+    history: &[ChatMessage],
+    user_query: &str,
+) -> Stage3Response {
+    let (chairman_model, chairman_known, chairman_has_key) = {
+        let cfg = config.read().unwrap();
+        let name = cfg.chairman_model.clone();
+        let entry = cfg.model_registry.get(name.trim());
+        let known = entry.is_some();
+        let has_key = entry
+            .map(|entry| !entry.api_key.trim().is_empty())
+            .unwrap_or(false);
+        (name, known, has_key)
+    }; // cfg dropped
+
+    if chairman_model.trim().is_empty() {
+        return Stage3Response {
+            model: "error".to_string(),
+            response: "Error: No Chairman model is configured. Please pick a Chairman in Settings."
+                .to_string(),
+        };
+    }
+
+    if !chairman_known {
+        return Stage3Response {
+            model: chairman_model.clone(),
+            response: format!(
+                "Error: Chairman model \"{chairman_model}\" was not found in your configured models. Make sure the model exists in Settings and the name matches exactly."
+            ),
+        };
+    }
+
+    if !chairman_has_key {
+        return Stage3Response {
+            model: chairman_model.clone(),
+            response: format!(
+                "Error: Chairman model \"{chairman_model}\" has no API Key configured. Please add its API Key in Settings."
+            ),
+        };
+    }
+
+    let mut messages = history.to_vec();
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: format!("Please reply in Chinese.\n\n{user_query}"),
+    });
+
+    let response = query_model(client, &config, &chairman_model, &messages, 120.0).await;
+
+    Stage3Response {
+        model: chairman_model,
+        response: response
+            .map(|reply| reply.content)
+            .unwrap_or_else(|| {
+                "Error: Chairman request failed (network error, timeout, or invalid response). Check the Base URL and request format in Settings.".to_string()
+            }),
+    }
+}
+
 fn parse_ranking_from_text(ranking_text: &str) -> Vec<String> {
     let pattern = Regex::new(r"Response [A-Z]").expect("valid ranking regex");
 
@@ -902,6 +971,19 @@ async fn run_full_council(
     history: &[ChatMessage],
     user_query: &str,
 ) -> SendMessageResponse {
+    let council_enabled = { config.read().unwrap().council_enabled };
+
+    // Council disabled: answer directly with the Chairman, skipping stages 2 & 3.
+    if !council_enabled {
+        let stage3 = chairman_only_response(client, config.clone(), history, user_query).await;
+        return SendMessageResponse {
+            stage1: Vec::new(),
+            stage2: Vec::new(),
+            stage3,
+            metadata: CouncilMetadata::default(),
+        };
+    }
+
     let stage1 = stage1_collect_responses(client, config.clone(), history, user_query).await;
 
     if stage1.is_empty() {
@@ -1148,57 +1230,93 @@ async fn run_streaming_council(
         None
     };
 
-    emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage1_start"))?;
-    let stage1 = stage1_collect_responses(&client, config.clone(), &history, &content).await;
-    emit_stream_event(
-        &window,
-        StreamEvent::new(&conversation_id, "stage1_complete").with_data(serialize_value(&stage1)?),
-    )?;
+    let council_enabled = { config.read().unwrap().council_enabled };
 
-    let (stage2, metadata, stage3) = if stage1.is_empty() {
+    // When the council feature is disabled, skip stage 2 (peer review) and
+    // stage 3 (synthesis): answer the question directly with the Chairman.
+    let (stage1, stage2, metadata, stage3) = if !council_enabled {
+        // Skip stages 1 & 2 entirely. Don't emit their "start" events so the UI
+        // doesn't flash "collecting responses / peer review" spinners; just send
+        // empty completion payloads to keep the frontend state machine in sync.
+        emit_stream_event(
+            &window,
+            StreamEvent::new(&conversation_id, "stage1_complete").with_data(json!([])),
+        )?;
+
         let empty_metadata = CouncilMetadata::default();
-        emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage2_start"))?;
         emit_stream_event(
             &window,
             StreamEvent::new(&conversation_id, "stage2_complete")
                 .with_data(json!([]))
                 .with_metadata(empty_metadata.clone()),
         )?;
-        emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage3_start"))?;
-        let stage3 = Stage3Response {
-            model: "error".to_string(),
-            response: "All models failed to respond. Please try again.".to_string(),
-        };
-        emit_stream_event(
-            &window,
-            StreamEvent::new(&conversation_id, "stage3_complete")
-                .with_data(serialize_value(&stage3)?),
-        )?;
-        (Vec::new(), empty_metadata, stage3)
-    } else {
-        emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage2_start"))?;
-        let (stage2, label_to_model) =
-            stage2_collect_rankings(&client, config.clone(), &history, &content, &stage1).await;
-        let metadata = CouncilMetadata {
-            aggregate_rankings: calculate_aggregate_rankings(&stage2, &label_to_model),
-            label_to_model,
-        };
-        emit_stream_event(
-            &window,
-            StreamEvent::new(&conversation_id, "stage2_complete")
-                .with_data(serialize_value(&stage2)?)
-                .with_metadata(metadata.clone()),
-        )?;
 
         emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage3_start"))?;
-        let stage3 =
-            stage3_synthesize_final(&client, config.clone(), &history, &content, &stage1, &stage2).await;
+        let stage3 = chairman_only_response(&client, config.clone(), &history, &content).await;
         emit_stream_event(
             &window,
             StreamEvent::new(&conversation_id, "stage3_complete")
                 .with_data(serialize_value(&stage3)?),
         )?;
-        (stage2, metadata, stage3)
+
+        (Vec::new(), Vec::new(), empty_metadata, stage3)
+    } else {
+        emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage1_start"))?;
+        let stage1 = stage1_collect_responses(&client, config.clone(), &history, &content).await;
+        emit_stream_event(
+            &window,
+            StreamEvent::new(&conversation_id, "stage1_complete")
+                .with_data(serialize_value(&stage1)?),
+        )?;
+
+        let (stage2, metadata, stage3) = if stage1.is_empty() {
+            let empty_metadata = CouncilMetadata::default();
+            emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage2_start"))?;
+            emit_stream_event(
+                &window,
+                StreamEvent::new(&conversation_id, "stage2_complete")
+                    .with_data(json!([]))
+                    .with_metadata(empty_metadata.clone()),
+            )?;
+            emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage3_start"))?;
+            let stage3 = Stage3Response {
+                model: "error".to_string(),
+                response: "All models failed to respond. Please try again.".to_string(),
+            };
+            emit_stream_event(
+                &window,
+                StreamEvent::new(&conversation_id, "stage3_complete")
+                    .with_data(serialize_value(&stage3)?),
+            )?;
+            (Vec::new(), empty_metadata, stage3)
+        } else {
+            emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage2_start"))?;
+            let (stage2, label_to_model) =
+                stage2_collect_rankings(&client, config.clone(), &history, &content, &stage1).await;
+            let metadata = CouncilMetadata {
+                aggregate_rankings: calculate_aggregate_rankings(&stage2, &label_to_model),
+                label_to_model,
+            };
+            emit_stream_event(
+                &window,
+                StreamEvent::new(&conversation_id, "stage2_complete")
+                    .with_data(serialize_value(&stage2)?)
+                    .with_metadata(metadata.clone()),
+            )?;
+
+            emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage3_start"))?;
+            let stage3 =
+                stage3_synthesize_final(&client, config.clone(), &history, &content, &stage1, &stage2)
+                    .await;
+            emit_stream_event(
+                &window,
+                StreamEvent::new(&conversation_id, "stage3_complete")
+                    .with_data(serialize_value(&stage3)?),
+            )?;
+            (stage2, metadata, stage3)
+        };
+
+        (stage1, stage2, metadata, stage3)
     };
 
     if let Some(title_task) = title_task {

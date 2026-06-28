@@ -353,6 +353,13 @@
 
 /* ── Toggle switch ── */
 
+.settings-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .toggle-switch {
   position: relative;
   display: inline-block;
