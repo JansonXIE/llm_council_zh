@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 修复
+- **在线更新无法连接 GitHub 导致检查失败（关键修复）**：修复了在中国大陆等无法直连 `github.com` 的网络环境下，更新检查报错 `error sending request for url` 的问题。Tauri 更新器内置的 HTTP 客户端默认不读取系统代理（浏览器能下载 `latest.json` 是因为走了系统代理，而更新器不走），因此直连 GitHub 失败。现已在 `tauri.conf.json` 中为更新器配置多个端点（GitHub 官方源 + `gh-proxy.com`、`ghfast.top` 加速镜像，按顺序自动重试）并将超时延长至 30 秒；同时在发布流程中将 `latest.json` 内的安装包下载链接也改为经由 `gh-proxy.com` 镜像，避免下载阶段再次直连 GitHub 失败。
 - **在线更新缺少 updater 权限导致无法检测新版本（关键修复）**：修复了应用窗口实际生效的 `default` capability 中缺少 `updater:default` 权限的问题。此前 `updater:default` 仅被声明在 `desktop-capability` 中，但 `tauri.conf.json` 的 `security.capabilities` 只引用了 `default`，导致权限从未生效。已安装的旧版本在启动时调用更新检查会因 `updater.check not allowed` 直接报错，而该错误被前端静默捕获（仅写入控制台），最终表现为「已发布新版本却不弹出升级提示」。现已将 `updater:default` 加入 `default` capability，并在设置界面新增「检查更新」按钮，可手动触发检查并显示真实结果（发现新版本 / 已是最新 / 具体错误）。
 - **在线更新下载链接含未编码空格（关键修复）**：修复了 `latest.json` 中安装包 `url` 字段未对文件名进行 URL 编码的问题。由于安装包名称包含空格（如 `LLM Council_0.2.9_x64-setup.exe`），生成的下载链接含非法空格字符，导致 Tauri 更新器在检查/下载阶段直接报错并被静默捕获，表现为「明明已发布新版本却不弹出升级提示」。现已在发布流程中使用 `encodeURIComponent` 对文件名编码（空格转为 `%20`）。
 - **在线更新无法检测新版本（关键修复）**：修复了发布流程中 Windows 与 Linux 两个构建任务并行向同一个 Release 上传产物时互相覆盖的竞态问题。该问题会导致最终 `latest.json` 只包含单一平台条目（且对应安装包可能被删除），使得另一平台的应用调用更新检查时找不到自身平台信息，从而不弹出升级提示。现已重构 GitHub Actions：各平台仅构建并上传产物为 artifact，再由独立的 `publish` 任务统一合并生成包含全部平台（`windows-x86_64`、`linux-x86_64`）的 `latest.json` 并创建唯一 Release。

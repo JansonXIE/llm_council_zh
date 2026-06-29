@@ -185,7 +185,13 @@ jobs:
               // updater can fetch installers whose names contain spaces
               // (e.g. 'LLM Council_0.2.9_x64-setup.exe').
               const url = base + '/' + encodeURIComponent(file);
-              p[key] = { signature: sig, url };
+              // Use a GitHub acceleration mirror so users in restricted
+              // networks (e.g. mainland China) can actually download the
+              // installer. The updater fetches latest.json from the same
+              // mirror, so keeping the asset URL on the mirror avoids a
+              // direct github.com connection that often fails.
+              const mirroredUrl = 'https://gh-proxy.com/' + url;
+              p[key] = { signature: sig, url: mirroredUrl };
               console.log(JSON.stringify(p));
             " "$PLATFORMS" "$key" "$sig" "$BASE" "$file")"
           }
