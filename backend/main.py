@@ -34,6 +34,11 @@ class SendMessageRequest(BaseModel):
     content: str
 
 
+class RenameConversationRequest(BaseModel):
+    """Request to rename a conversation."""
+    title: str
+
+
 class ConversationMetadata(BaseModel):
     """Conversation metadata for list view."""
     id: str
@@ -77,6 +82,27 @@ async def get_conversation(conversation_id: str):
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation
+
+
+@app.patch("/api/conversations/{conversation_id}", response_model=ConversationMetadata)
+async def rename_conversation(conversation_id: str, request: RenameConversationRequest):
+    """Rename a conversation."""
+    conversation = storage.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+    storage.update_conversation_title(conversation_id, title)
+    conversation = storage.get_conversation(conversation_id)
+    return {
+        "id": conversation["id"],
+        "created_at": conversation["created_at"],
+        "title": conversation["title"],
+        "message_count": len(conversation["messages"]),
+    }
 
 
 @app.post("/api/conversations/{conversation_id}/message")

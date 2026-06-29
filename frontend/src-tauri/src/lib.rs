@@ -1663,6 +1663,21 @@ fn start_council_stream(
 }
 
 #[tauri::command]
+async fn rename_conversation(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+    title: String,
+) -> Result<(), String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err("Title cannot be empty".to_string());
+    }
+    update_conversation_title(&app_handle, &state.config, &conversation_id, trimmed.to_string())
+        .await
+}
+
+#[tauri::command]
 async fn delete_conversation(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -1715,6 +1730,7 @@ pub fn run() {
             get_conversation,
             send_message,
             delete_conversation,
+            rename_conversation,
             start_council_stream,
             get_settings,
             save_settings

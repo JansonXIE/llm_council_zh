@@ -91,4 +91,8 @@ export const api = {
   async deleteConversation(conversationId) {
     return invoke('delete_conversation', { conversationId });
   },
+
+  async renameConversation(conversationId, title) {
+    return invoke('rename_conversation', { conversationId, title });
+  },
 };

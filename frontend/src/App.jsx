@@ -127,6 +127,26 @@ function App() {
     }
   };
 
+  const handleRenameConversation = async (id, title) => {
+    const trimmed = (title || '').trim();
+    if (!trimmed) {
+      return;
+    }
+    try {
+      await api.renameConversation(id, trimmed);
+      setConversations((prev) =>
+        prev.map((conv) =>
+          conv.id === id ? { ...conv, title: trimmed } : conv
+        )
+      );
+      setCurrentConversation((prev) =>
+        prev && prev.id === id ? { ...prev, title: trimmed } : prev
+      );
+    } catch (error) {
+      console.error('Failed to rename conversation:', error);
+    }
+  };
+
   const handleToggleCouncil = async (enabled) => {
     // Optimistically update the UI, then persist to settings.
     setCouncilEnabled(enabled);
@@ -271,6 +291,7 @@ function App() {
         onSelectConversation={handleSelectConversation}
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}
+        onRenameConversation={handleRenameConversation}
       />
       <ChatInterface
         conversation={currentConversation}
