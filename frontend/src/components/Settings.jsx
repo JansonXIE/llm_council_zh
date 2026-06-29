@@ -17,6 +17,8 @@ export default function Settings({ isOpen, onClose }) {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [appVersion, setAppVersion] = useState('');
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -31,6 +33,34 @@ export default function Settings({ isOpen, onClose }) {
       setAppVersion(version);
     } catch (e) {
       console.error('Failed to get app version:', e);
+    }
+  }
+
+  async function handleCheckUpdate() {
+    setCheckingUpdate(true);
+    setUpdateStatus(null);
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateStatus({ type: 'available', text: `发现新版本 v${update.version}` });
+        const yes = await ask(`发现新版本 v${update.version}\n\n是否立即下载并安装？`, {
+          title: '发现新版本',
+          kind: 'info',
+        });
+        if (yes) {
+          await update.downloadAndInstall();
+          await message('更新包下载并安装完成，请重新启动应用以应用更新。', { title: '更新成功', kind: 'info' });
+        }
+      } else {
+        setUpdateStatus({ type: 'latest', text: '当前已是最新版本' });
+      }
+    } catch (e) {
+      // 把真实错误暴露出来，便于排查（签名 / URL / 网络等问题）。
+      const detail = e && e.message ? e.message : String(e);
+      console.error('Manual update check failed:', e);
+      setUpdateStatus({ type: 'error', text: `检查更新失败: ${detail}` });
+    } finally {
+      setCheckingUpdate(false);
     }
   }
 
@@ -298,8 +328,31 @@ export default function Settings({ isOpen, onClose }) {
             <h3 className="settings-group-title">关于与更新</h3>
             <div className="settings-field" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <label style={{ marginBottom: 0 }}>当前版本</label>
-              <span style={{ color: '#666', fontSize: '14px' }}>{appVersion ? `v${appVersion}` : '...'}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ color: '#666', fontSize: '14px' }}>{appVersion ? `v${appVersion}` : '...'}</span>
+                <button
+                  type="button"
+                  className="settings-cancel-btn"
+                  onClick={handleCheckUpdate}
+                  disabled={checkingUpdate}
+                  style={{ padding: '4px 12px', fontSize: '13px' }}
+                >
+                  {checkingUpdate ? '检查中...' : '检查更新'}
+                </button>
+              </span>
             </div>
+            {updateStatus && (
+              <div
+                className="settings-field-hint"
+                style={{
+                  marginTop: '8px',
+                  color: updateStatus.type === 'error' ? '#d9534f' : updateStatus.type === 'available' ? '#4a90e2' : '#5cb85c',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {updateStatus.text}
+              </div>
+            )}
             <div className="settings-field" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '12px' }}>
               <label style={{ marginBottom: 0 }}>自动检查更新</label>
               <label className="toggle-switch">
