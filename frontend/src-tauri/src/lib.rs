@@ -78,12 +78,23 @@ struct Conversation {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+struct FileAttachment {
+    /// Original file name (e.g. "report.pdf"), used for display.
+    #[serde(default)]
+    name: String,
+    /// Base64 data URL, e.g. "data:application/pdf;base64,....".
+    data: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct ConversationMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     images: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    files: Vec<FileAttachment>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stage1: Option<Vec<Stage1Response>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,6 +176,10 @@ struct ChatMessage {
     /// message. Empty for text-only messages. Used for multimodal requests.
     #[serde(skip)]
     images: Vec<String>,
+    /// File attachments (e.g. PDFs) attached to this message. Empty for
+    /// text-only messages. Used for document/media input in multimodal requests.
+    #[serde(skip)]
+    files: Vec<FileAttachment>,
 }
 
 impl ChatMessage {
@@ -173,6 +188,7 @@ impl ChatMessage {
             role: role.into(),
             content: content.into(),
             images: Vec::new(),
+            files: Vec::new(),
         }
     }
 }
@@ -392,6 +408,7 @@ fn assistant_message_from_response(response: &SendMessageResponse) -> Conversati
         role: "assistant".to_string(),
         content: None,
         images: Vec::new(),
+        files: Vec::new(),
         stage1: Some(response.stage1.clone()),
         stage2: Some(response.stage2.clone()),
         stage3: Some(response.stage3.clone()),
@@ -399,11 +416,12 @@ fn assistant_message_from_response(response: &SendMessageResponse) -> Conversati
     }
 }
 
-fn user_message(content: String, images: Vec<String>) -> ConversationMessage {
+fn user_message(content: String, images: Vec<String>, files: Vec<FileAttachment>) -> ConversationMessage {
     ConversationMessage {
         role: "user".to_string(),
         content: Some(content),
         images,
+        files,
         stage1: None,
         stage2: None,
         stage3: None,
@@ -493,10 +511,10 @@ fn parse_data_url(data_url: &str) -> (String, String) {
 }
 
 /// Build the OpenAI-compatible `content` field for a single message. When the
-/// message carries images we emit the multimodal array form; otherwise a plain
-/// string is used to stay compatible with text-only providers.
+/// message carries images or files we emit the multimodal array form; otherwise
+/// a plain string is used to stay compatible with text-only providers.
 fn openai_message_content(message: &ChatMessage) -> Value {
-    if message.images.is_empty() {
+    if message.images.is_empty() && message.files.is_empty() {
         return json!(message.content);
     }
 
@@ -508,6 +526,22 @@ fn openai_message_content(message: &ChatMessage) -> Value {
         parts.push(json!({
             "type": "image_url",
             "image_url": { "url": image },
+        }));
+    }
+    for file in &message.files {
+        // OpenAI / OpenRouter accept PDFs (and other documents) as a `file`
+        // content part with a base64 data URL in `file_data`.
+        let filename = if file.name.trim().is_empty() {
+            "document.pdf".to_string()
+        } else {
+            file.name.clone()
+        };
+        parts.push(json!({
+            "type": "file",
+            "file": {
+                "filename": filename,
+                "file_data": file.data,
+            },
         }));
     }
     json!(parts)
@@ -531,7 +565,7 @@ fn anthropic_payload(model: &str, messages: &[ChatMessage]) -> Value {
     let messages_json = conversation
         .iter()
         .map(|message| {
-            if message.images.is_empty() {
+            if message.images.is_empty() && message.files.is_empty() {
                 json!({
                     "role": message.role,
                     "content": message.content,
@@ -542,6 +576,19 @@ fn anthropic_payload(model: &str, messages: &[ChatMessage]) -> Value {
                     let (mime, data) = parse_data_url(image);
                     parts.push(json!({
                         "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime,
+                            "data": data,
+                        },
+                    }));
+                }
+                for file in &message.files {
+                    // Anthropic accepts PDFs as a `document` content block with
+                    // a base64 source and media_type "application/pdf".
+                    let (mime, data) = parse_data_url(&file.data);
+                    parts.push(json!({
+                        "type": "document",
                         "source": {
                             "type": "base64",
                             "media_type": mime,
@@ -589,6 +636,17 @@ fn gemini_payload(messages: &[ChatMessage]) -> Value {
                     },
                 }));
             }
+            for file in &message.files {
+                // Gemini accepts PDFs via the same inline_data mechanism as
+                // images, using mime_type "application/pdf".
+                let (mime, data) = parse_data_url(&file.data);
+                parts.push(json!({
+                    "inline_data": {
+                        "mime_type": mime,
+                        "data": data,
+                    },
+                }));
+            }
             json!({
                 "role": if message.role == "assistant" { "model" } else { "user" },
                 "parts": parts,
@@ -628,6 +686,7 @@ fn extract_conversation_history(conversation: &Conversation, max_turns: usize) -
                     role: "user".to_string(),
                     content: content.clone(),
                     images: msg.images.clone(),
+                    files: msg.files.clone(),
                 });
                 turns += 1;
                 if turns >= max_turns {
@@ -913,15 +972,17 @@ async fn stage3_synthesize_final(
     }
 }
 
-/// Analyze attached images and answer the question directly using the
-/// dedicated image model configured in Settings. Bypasses the council entirely
-/// and returns a Stage3Response so the answer renders in the Final Response slot.
+/// Analyze attached images and/or files (e.g. PDFs) and answer the question
+/// directly using the dedicated media model configured in Settings. Bypasses
+/// the council entirely and returns a Stage3Response so the answer renders in
+/// the Final Response slot.
 async fn image_analysis_response(
     client: &Client,
     config: Arc<RwLock<CouncilConfig>>,
     history: &[ChatMessage],
     user_query: &str,
     images: &[String],
+    files: &[FileAttachment],
 ) -> Stage3Response {
     let (image_model, model_known, model_has_key) = {
         let cfg = config.read().unwrap();
@@ -961,7 +1022,13 @@ async fn image_analysis_response(
     }
 
     let query_text = if user_query.trim().is_empty() {
-        "请用中文详细描述并分析这张图片的内容。".to_string()
+        if images.is_empty() {
+            "请用中文详细阅读并分析所附文件的内容，总结要点并回答其中可能涉及的问题。".to_string()
+        } else if files.is_empty() {
+            "请用中文详细描述并分析这张图片的内容。".to_string()
+        } else {
+            "请用中文详细阅读并分析所附的图片与文件内容。".to_string()
+        }
     } else {
         format!("请用中文回答。\n\n{user_query}")
     };
@@ -971,6 +1038,7 @@ async fn image_analysis_response(
         role: "user".to_string(),
         content: query_text,
         images: images.to_vec(),
+        files: files.to_vec(),
     });
 
     let response = query_model(client, &config, &image_model, &messages, 180.0).await;
@@ -978,7 +1046,7 @@ async fn image_analysis_response(
     Stage3Response {
         model: image_model,
         response: response.map(|reply| reply.content).unwrap_or_else(|| {
-            "错误：图片分析请求失败（网络错误、超时或返回无效）。请检查该模型的 Base URL、请求格式，并确认其支持图片输入。".to_string()
+            "错误：媒体分析请求失败（网络错误、超时或返回无效）。请检查该模型的 Base URL、请求格式，并确认其支持图片/PDF 输入。".to_string()
         }),
     }
 }
@@ -1363,10 +1431,11 @@ async fn append_user_message(
     conversation_id: &str,
     content: String,
     images: Vec<String>,
+    files: Vec<FileAttachment>,
 ) -> Result<(), String> {
     let mut conversation =
         load_conversation_from_storage(app_handle, config, conversation_id).await?;
-    conversation.messages.push(user_message(content, images));
+    conversation.messages.push(user_message(content, images, files));
     save_conversation(app_handle, config, &conversation).await
 }
 
@@ -1400,6 +1469,7 @@ async fn run_streaming_council(
     conversation_id: String,
     content: String,
     images: Vec<String>,
+    files: Vec<FileAttachment>,
 ) -> Result<(), String> {
     let conversation =
         load_conversation_from_storage(&app_handle, &config, &conversation_id).await?;
@@ -1413,6 +1483,7 @@ async fn run_streaming_council(
         &conversation_id,
         content.clone(),
         images.clone(),
+        files.clone(),
     )
     .await?;
 
@@ -1428,12 +1499,13 @@ async fn run_streaming_council(
     };
 
     let council_enabled = { config.read().unwrap().council_enabled };
-    let has_images = !images.is_empty();
+    let has_media = !images.is_empty() || !files.is_empty();
 
-    // When images are attached, bypass the council entirely and answer directly
-    // with the dedicated image model. Otherwise, when the council feature is
-    // disabled, skip stages 2 & 3 and answer with the Chairman directly.
-    let (stage1, stage2, metadata, stage3) = if has_images {
+    // When images or files (e.g. PDFs) are attached, bypass the council entirely
+    // and answer directly with the dedicated media model. Otherwise, when the
+    // council feature is disabled, skip stages 2 & 3 and answer with the
+    // Chairman directly.
+    let (stage1, stage2, metadata, stage3) = if has_media {
         emit_stream_event(
             &window,
             StreamEvent::new(&conversation_id, "stage1_complete").with_data(json!([])),
@@ -1449,7 +1521,7 @@ async fn run_streaming_council(
 
         emit_stream_event(&window, StreamEvent::new(&conversation_id, "stage3_start"))?;
         let stage3 =
-            image_analysis_response(&client, config.clone(), &history, &content, &images).await;
+            image_analysis_response(&client, config.clone(), &history, &content, &images, &files).await;
         emit_stream_event(
             &window,
             StreamEvent::new(&conversation_id, "stage3_complete")
@@ -1612,6 +1684,7 @@ async fn send_message(
         &conversation_id,
         content.clone(),
         Vec::new(),
+        Vec::new(),
     )
     .await?;
 
@@ -1634,11 +1707,13 @@ fn start_council_stream(
     conversation_id: String,
     content: String,
     images: Option<Vec<String>>,
+    files: Option<Vec<FileAttachment>>,
 ) -> Result<(), String> {
     let client = state.client.clone();
     let config = state.config.clone();
     let error_window = window.clone();
     let images = images.unwrap_or_default();
+    let files = files.unwrap_or_default();
 
     tauri::async_runtime::spawn(async move {
         if let Err(error) = run_streaming_council(
@@ -1649,6 +1724,7 @@ fn start_council_stream(
             conversation_id.clone(),
             content,
             images,
+            files,
         )
         .await
         {

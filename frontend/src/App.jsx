@@ -160,12 +160,12 @@ function App() {
     }
   };
 
-  const handleSendMessage = async (content, images = []) => {
+  const handleSendMessage = async (content, images = [], files = []) => {
     if (!currentConversationId) return;
     setIsLoading(true);
     try {
       // Optimistically add user message to UI
-      const userMessage = { role: 'user', content, images };
+      const userMessage = { role: 'user', content, images, files };
       setCurrentConversation((prev) => ({
         ...prev,
         messages: [...prev.messages, userMessage],
@@ -192,7 +192,7 @@ function App() {
       }));
 
       // Send message with streaming
-      await api.sendMessageStream(currentConversationId, content, images, (eventType, event) => {
+      await api.sendMessageStream(currentConversationId, content, images, files, (eventType, event) => {
         switch (eventType) {
           case 'stage1_start':
             setCurrentConversation((prev) => {

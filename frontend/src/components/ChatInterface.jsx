@@ -14,6 +14,7 @@ export default function ChatInterface({
 }) {
   const [input, setInput] = useState('');
   const [images, setImages] = useState([]);
+  const [files, setFiles] = useState([]);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -46,8 +47,28 @@ export default function ChatInterface({
     }
   };
 
+  const addPdfFiles = async (fileList) => {
+    const pdfFiles = Array.from(fileList || []).filter(
+      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    );
+    if (pdfFiles.length === 0) return;
+    try {
+      const entries = await Promise.all(
+        pdfFiles.map(async (f) => ({
+          name: f.name,
+          data: await readFileAsDataUrl(f),
+        }))
+      );
+      setFiles((prev) => [...prev, ...entries]);
+    } catch (err) {
+      console.error('读取 PDF 失败:', err);
+    }
+  };
+
+  // Handles both images and PDFs from a single file input.
   const handleFilesSelected = async (e) => {
-    await addImageFiles(e.target.files);
+    const selected = e.target.files;
+    await Promise.all([addImageFiles(selected), addPdfFiles(selected)]);
     // Reset the input so the same file can be selected again later.
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -55,17 +76,25 @@ export default function ChatInterface({
   const handlePaste = async (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
-    const pastedFiles = [];
+    const pastedImages = [];
+    const pastedPdfs = [];
     for (const item of items) {
-      if (item.kind === 'file' && item.type.startsWith('image/')) {
-        const file = item.getAsFile();
-        if (file) pastedFiles.push(file);
+      if (item.kind !== 'file') continue;
+      const file = item.getAsFile();
+      if (!file) continue;
+      if (item.type.startsWith('image/')) {
+        pastedImages.push(file);
+      } else if (
+        item.type === 'application/pdf' ||
+        file.name.toLowerCase().endsWith('.pdf')
+      ) {
+        pastedPdfs.push(file);
       }
     }
-    if (pastedFiles.length > 0) {
-      // Prevent the (usually empty) image text from being inserted into the box.
+    if (pastedImages.length > 0 || pastedPdfs.length > 0) {
+      // Prevent the (usually empty) placeholder text from being inserted.
       e.preventDefault();
-      await addImageFiles(pastedFiles);
+      await Promise.all([addImageFiles(pastedImages), addPdfFiles(pastedPdfs)]);
     }
   };
 
@@ -73,13 +102,18 @@ export default function ChatInterface({
     setImages((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const handleRemoveFile = (index) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
-    const hasContent = input.trim() || images.length > 0;
+    const hasContent = input.trim() || images.length > 0 || files.length > 0;
     if (hasContent && !isLoading) {
-      onSendMessage(input, images);
+      onSendMessage(input, images, files);
       setInput('');
       setImages([]);
+      setFiles([]);
     }
   };
 
@@ -126,6 +160,18 @@ export default function ChatInterface({
                             alt={`附图 ${i + 1}`}
                             className="message-image"
                           />
+                        ))}
+                      </div>
+                    )}
+                    {msg.files && msg.files.length > 0 && (
+                      <div className="message-files">
+                        {msg.files.map((file, i) => (
+                          <div key={i} className="message-file">
+                            <span className="message-file-icon">📄</span>
+                            <span className="message-file-name">
+                              {file.name || `文档 ${i + 1}`}
+                            </span>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -229,9 +275,29 @@ export default function ChatInterface({
             ))}
           </div>
         )}
+        {files.length > 0 && (
+          <div className="file-preview-bar">
+            {files.map((file, i) => (
+              <div key={i} className="file-preview-item">
+                <span className="file-preview-icon">📄</span>
+                <span className="file-preview-name" title={file.name}>
+                  {file.name || `文档 ${i + 1}`}
+                </span>
+                <button
+                  type="button"
+                  className="file-preview-remove"
+                  onClick={() => handleRemoveFile(i)}
+                  aria-label="移除文件"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           className="message-input"
-          placeholder="输入您的问题... (Shift+Enter 换行, Enter 发送, Ctrl+V 粘贴图片)"
+          placeholder="输入您的问题... (Shift+Enter 换行, Enter 发送, Ctrl+V 粘贴图片/PDF)"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -242,7 +308,7 @@ export default function ChatInterface({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,application/pdf,.pdf"
           multiple
           style={{ display: 'none' }}
           onChange={handleFilesSelected}
@@ -252,14 +318,16 @@ export default function ChatInterface({
           className="attach-button"
           onClick={() => fileInputRef.current?.click()}
           disabled={isLoading}
-          title="添加图片"
+          title="上传图片或 PDF"
         >
-          📎 图片
+          📎 上传
         </button>
         <button
           type="submit"
           className="send-button"
-          disabled={(!input.trim() && images.length === 0) || isLoading}
+          disabled={
+            (!input.trim() && images.length === 0 && files.length === 0) || isLoading
+          }
         >
           发送
         </button>
