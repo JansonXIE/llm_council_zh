@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LLM Council",
+  "productName": "LLM-Council",
   "version": "0.1.0",
   "identifier": "com.jianxing.llm-council",
   "build": {

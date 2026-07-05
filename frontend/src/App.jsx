@@ -51,8 +51,17 @@ function App() {
               kind: 'info',
             });
             if (yes) {
-              await update.downloadAndInstall();
-              await message('更新包下载并安装完成，请重新启动应用以应用更新。', { title: '更新成功', kind: 'info' });
+              try {
+                await update.downloadAndInstall();
+                await message('更新包下载并安装完成，请重新启动应用以应用更新。', { title: '更新成功', kind: 'info' });
+              } catch (installErr) {
+                const detail = installErr && installErr.message ? installErr.message : String(installErr);
+                console.error('Auto update download/install failed:', installErr);
+                await message(`下载或安装更新失败：\n${detail}\n\n您可以前往 GitHub Releases 页面手动下载最新版本。`, {
+                  title: '更新失败',
+                  kind: 'error',
+                });
+              }
             }
           }
         }

@@ -48,8 +48,44 @@ export default function Settings({ isOpen, onClose }) {
           kind: 'info',
         });
         if (yes) {
-          await update.downloadAndInstall();
-          await message('更新包下载并安装完成，请重新启动应用以应用更新。', { title: '更新成功', kind: 'info' });
+          try {
+            let downloaded = 0;
+            let contentLength = 0;
+            setUpdateStatus({ type: 'available', text: '开始下载更新包…' });
+            await update.downloadAndInstall((event) => {
+              switch (event.event) {
+                case 'Started':
+                  contentLength = event.data.contentLength ?? 0;
+                  setUpdateStatus({ type: 'available', text: '开始下载更新包…' });
+                  break;
+                case 'Progress':
+                  downloaded += event.data.chunkLength ?? 0;
+                  if (contentLength > 0) {
+                    const pct = Math.floor((downloaded / contentLength) * 100);
+                    setUpdateStatus({ type: 'available', text: `正在下载更新包… ${pct}%` });
+                  } else {
+                    const mb = (downloaded / 1024 / 1024).toFixed(1);
+                    setUpdateStatus({ type: 'available', text: `正在下载更新包… ${mb} MB` });
+                  }
+                  break;
+                case 'Finished':
+                  setUpdateStatus({ type: 'available', text: '下载完成，正在安装…' });
+                  break;
+                default:
+                  break;
+              }
+            });
+            setUpdateStatus({ type: 'latest', text: '更新安装完成，请重启应用' });
+            await message('更新包下载并安装完成，请重新启动应用以应用更新。', { title: '更新成功', kind: 'info' });
+          } catch (installErr) {
+            const detail = installErr && installErr.message ? installErr.message : String(installErr);
+            console.error('Update download/install failed:', installErr);
+            setUpdateStatus({ type: 'error', text: `下载或安装失败: ${detail}` });
+            await message(`下载或安装更新失败：\n${detail}\n\n您也可以前往 GitHub Releases 页面手动下载最新版本。`, {
+              title: '更新失败',
+              kind: 'error',
+            });
+          }
         }
       } else {
         setUpdateStatus({ type: 'latest', text: '当前已是最新版本' });
