@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => {
     clearScreen: false,
     server: {
       host: env.TAURI_DEV_HOST || '127.0.0.1',
-      port: 4173,
+      port: 5173,
       strictPort: true,
     },
     build: {
