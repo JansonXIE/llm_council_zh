@@ -125,6 +125,34 @@ body {
   padding: 0;
 }
 
+.markdown-table-wrapper {
+  margin: 0 0 12px 0;
+  overflow-x: auto;
+}
+
+.markdown-content table {
+  border-collapse: collapse;
+  width: max-content;
+  max-width: 100%;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid #d0d7de;
+  padding: 6px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-content th {
+  background: #f0f4f8;
+  font-weight: 600;
+}
+
+.markdown-content tr:nth-child(even) td {
+  background: #fafbfc;
+}
+
 .markdown-content blockquote {
   margin: 0 0 12px 0;
   padding-left: 16px;

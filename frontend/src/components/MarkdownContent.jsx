@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 function getTextContent(node) {
   if (typeof node === 'string' || typeof node === 'number') {
@@ -15,6 +16,14 @@ function getTextContent(node) {
   }
 
   return '';
+}
+
+function ScrollableTable({ children }) {
+  return (
+    <div className="markdown-table-wrapper">
+      <table>{children}</table>
+    </div>
+  );
 }
 
 function CopyablePre({ children, ...props }) {
@@ -48,7 +57,10 @@ function CopyablePre({ children, ...props }) {
 
 export default function MarkdownContent({ children }) {
   return (
-    <ReactMarkdown components={{ pre: CopyablePre }}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{ pre: CopyablePre, table: ScrollableTable }}
+    >
       {children}
     </ReactMarkdown>
   );
